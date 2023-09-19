@@ -19,6 +19,8 @@
 #include "adv_network_tx.h"
 #include "adv_network_kernels.h"
 #include "holoscan/holoscan.hpp"
+#include "kernels.cuh"
+#include "nats_helper.h"
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
@@ -134,10 +136,13 @@ class AdvNetworkingBenchRxOp : public Operator {
 
     cudaMallocHost(&full_batch_data_h_, batch_size_.get() * nom_payload_size_);
     cudaMalloc(&full_batch_data_d_,     batch_size_.get() * nom_payload_size_);
+    cudaMallocHost(&spec_output_, 1024 * sizeof(float));
 
     if (hds_.get()) {
       cudaMallocHost((void**)&h_dev_ptrs_, sizeof(void*) * batch_size_.get());
     }
+
+    nats.Init("nats://localhost:4222");
 
     HOLOSCAN_LOG_INFO("AdvNetworkingBenchRxOp::initialize() complete");
   }
@@ -172,6 +177,7 @@ class AdvNetworkingBenchRxOp : public Operator {
       int64_t bytes_in_batch = 0;
       for (int p = 0; p < adv_net_get_num_pkts(burst); p++) {
         h_dev_ptrs_[aggr_pkts_recv_ + p]   = adv_net_get_gpu_pkt_ptr(burst, p);
+
         ttl_bytes_in_cur_batch_           +=
           adv_net_get_gpu_packet_len(burst, p) + sizeof(UDPIPV4Pkt);
       }
@@ -201,8 +207,15 @@ class AdvNetworkingBenchRxOp : public Operator {
       aggr_pkts_recv_ = 0;
 
       if (hds_.get()) {
-        simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_), h_dev_ptrs_,
-                      nom_payload_size_, batch_size_.get());
+        // simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_), h_dev_ptrs_,
+        //               nom_payload_size_, batch_size_.get());
+        auto cview = (float *)full_batch_data_d_;
+
+        //launch_print((uint8_t*)h_dev_ptrs_[0], 64);
+     
+        process_input((int16_t*)h_dev_ptrs_[0], spec_output_, 1024, 0);
+        nats.SendToGUI((void*)spec_output_, "spec_output", 1024*sizeof(float));
+
         if (cudaGetLastError() != cudaSuccess)  {
           HOLOSCAN_LOG_ERROR("CUDA error with {} packets in batch and {} bytes total",
                   batch_size_.get(), batch_size_.get()*nom_payload_size_);
@@ -230,12 +243,14 @@ class AdvNetworkingBenchRxOp : public Operator {
   int64_t ttl_pkts_recv_ = 0;                // Total packets received in operator
   int64_t aggr_pkts_recv_ = 0;               // Aggregate packets received in processing batch
   uint16_t nom_payload_size_;                // Nominal payload size (no headers)
+  float *spec_output_;
   void **h_dev_ptrs_;                        // Host-pinned list of device pointers
   void *full_batch_data_h_;                  // Host-pinned aggregated batch
   void *full_batch_data_d_;                  // Device aggregated batch
   Parameter<bool> hds_;                      // Header-data split enabled
   Parameter<uint32_t> batch_size_;           // Batch size for one processing block
   Parameter<uint16_t> max_packet_size_;      // Maximum size of a single packet
+  NATS nats;
 };
 
 }  // namespace holoscan::ops
@@ -279,8 +294,12 @@ int main(int argc, char** argv) {
   auto config_path = std::filesystem::canonical(argv[0]).parent_path();
   config_path += "/" + std::string(argv[1]);
   app->config(config_path);
+  //auto& tracker = app->track();
 
+    // app->scheduler(app->make_scheduler<holoscan::MultiThreadScheduler>(
+    //     "multithread-scheduler", app->from_config("scheduler")));
   app->run();
+  //tracker.print();
 
   return 0;
 }

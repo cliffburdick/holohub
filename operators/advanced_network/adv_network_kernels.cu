@@ -16,6 +16,7 @@
  */
 
 #include "adv_network_kernels.h"
+#include <stdio.h>
 
 /**
  * @brief Simple packet reorder kernel to demonstrate reordering a batch of packets into 

@@ -14,15 +14,35 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.20)
-project(adv_networking_bench CXX)
+project(adv_networking_bench CXX CUDA)
 
 find_package(holoscan 0.6 REQUIRED CONFIG
              PATHS "/opt/nvidia/holoscan" "/workspace/holoscan-sdk/install")
 
 find_package(PkgConfig REQUIRED)
-        
+
+include(FetchContent)
+FetchContent_Declare(
+  MatX
+  GIT_REPOSITORY https://github.com/NVIDIA/MatX.git
+  GIT_TAG v0.5.0
+)
+FetchContent_MakeAvailable(MatX)
+
+
+set(NATS_BUILD_WITH_TLS OFF)
+set(NATS_BUILD_STREAMING OFF)
+FetchContent_Declare(
+  nats-c
+  GIT_REPOSITORY https://github.com/nats-io/nats.c.git
+  GIT_TAG v3.6.1
+)
+FetchContent_MakeAvailable(nats-c)
+
 add_executable(adv_networking_bench
   main.cpp
+  nats_helper.cpp
+  kernels.cu
 )
 
 target_link_libraries(adv_networking_bench
@@ -30,7 +50,12 @@ target_link_libraries(adv_networking_bench
   holoscan::core
   holoscan::advanced_network_rx
   holoscan::advanced_network_tx
+  matx::matx 
+  nats
 )
+
+target_include_directories(adv_networking_bench PRIVATE   ${nats-c_SOURCE_DIR}/src)
+target_link_directories(adv_networking_bench PRIVATE ${nats-c_BINARY_DIR}/src)
 
 # Copy config file
 add_custom_target(adv_networking_bench_rx_yaml

@@ -647,8 +647,11 @@ void DpdkMgr::Initialize() {
 
   int flow_num = 0;
   for (const auto &rx : cfg_.rx_) {
-    if (rx.flow_isolation_) {
+    if (!rx.flow_isolation_) {
       rte_eth_promiscuous_enable(rx.port_id_);
+    }
+    else {
+      HOLOSCAN_LOG_INFO("Not enabling promiscuous mode on port {} since flow isolation is enabled", rx.port_id_);
     }
     
     for (const auto &flow : rx.flows_) {
@@ -1008,6 +1011,11 @@ int DpdkMgr::rx_core(void *arg) {
       total_pkts          += nb_rx;
 
       if (burst->hdr.hdr.num_pkts == tparams->batch_size) {
+        // auto *pkt  = rte_pktmbuf_mtod((struct rte_mbuf*)burst->cpu_pkts[0], uint8_t*);
+        // for (int i = 0; i < ((struct rte_mbuf*)burst->cpu_pkts[0])->data_len; i++) {
+        //   printf("%02x ", pkt[i]);
+        // }
+        // printf("\n");
         rte_ring_enqueue(tparams->ring, reinterpret_cast<void *>(burst));
         break;
       }
