@@ -16,7 +16,7 @@ import time
 
 L = 1228800
 BW = 100
-FFT_SIZE = 1024
+FFT_SIZE = 256
 
 np.set_printoptions(threshold=np.inf)
 
@@ -29,7 +29,7 @@ t.start()
 txq.put_nowait(subscribe(subject="spec_output"))
 
 Fs = 2949120000/3
-l1 = 1024
+l1 = FFT_SIZE
 x = np.linspace(-Fs/2, Fs/2 - Fs/l1, l1)/1e6
 #fig = plt.figure()
 fig, ax1 = plt.subplots()
@@ -37,7 +37,7 @@ line, = ax1.plot(x, np.random.randn(FFT_SIZE))
 plt.grid()
 
 def init():
-  ax1.set_ylim(-120, 0)
+  #ax1.set_ylim(-120, 0)
   ax1.set_title('JESD output of MxFE')
   ax1.set_ylabel('Power (dB)')
   ax1.set_xlabel('Frequency (MHz)')
@@ -47,15 +47,17 @@ def init():
 def animate(i):
   try:
     obj = rxq_psd.get(block=False)
-    data_len = 1024 * 4
+    data_len = FFT_SIZE * 4
     #mtype, data = struct.unpack(f'@I{data_len}s', obj)
     (data,) = struct.unpack(f'@{data_len}s', obj)
     y = np.frombuffer(data, dtype=np.float32)
+    #print(y)
     #ax1.clear()
 
     line.set_ydata(y)
+    print("Update")
   except Empty:
-      print("here")
+    pass
 
   return line,
     

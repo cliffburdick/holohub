@@ -35,43 +35,33 @@ __global__ void i16tofp32(const int16_t *in, cuda::std::complex<float> *out, int
 void process_input(int16_t *in, float *out, int num_samps, cudaStream_t stream) {
   constexpr int SAMP_PER_CLK = 4;
   constexpr int Fs = 2949120000/3;
-  constexpr int samps = 1024;
+  constexpr int samps = 16384;
+  constexpr int nfft = 256;
   auto in_t = matx::make_tensor<int16_t, 1>(in, {samps*2});
 
   auto inf_t = matx::make_tensor<float, 1>((float*)out, {samps*2});
   auto out_t = matx::make_tensor<cuda::std::complex<float>, 1>((cuda::std::complex<float>*)out, {samps});
 
-  auto out_tmp_t = matx::make_tensor<float, 1>({samps * 2}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
+  auto out_tmp_t = matx::make_tensor<float, 1>({nfft}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
   auto out_cplx_t = matx::make_tensor<cuda::std::complex<float>, 1>({samps}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
 
-  auto out_doublebuf_t = matx::make_tensor<float, 1>((float*)out, {samps});
+  auto infc_t = matx::make_tensor<cuda::std::complex<float>, 1>((cuda::std::complex<float>*)out, {samps});
+  auto out_doublebuf_t = matx::make_tensor<float, 1>((float*)out, {nfft});
 
   (inf_t = in_t / 32768.0).run(stream);
+//matx::print(infc_t);
+  // (out_cplx_t = out_t * matx::hanning<0>(out_t.Shape())).run(stream);
 
-  (out_cplx_t = out_t * matx::hanning<0>(out_t.Shape())).run(stream);
 
+  // (out_cplx_t = matx::fft(out_cplx_t)).run(stream);
+  // (out_doublebuf_t = 20.0f * fftshift1D( matx::log10(matx::abs(out_cplx_t)) - 
+  //                                       log10(static_cast<float>(out_t.Size(0)) / 2.0f)
+  //                                     )).run(stream);
 
-  matx::fft(out_cplx_t, out_cplx_t, 0, stream);
-  (out_doublebuf_t = 20.0f * fftshift1D( matx::log10(matx::abs(out_cplx_t)) - 
-                                        log10(static_cast<float>(out_t.Size(0)) / 2.0f)
-                                      )).run(stream);
-//matx::print(out_doublebuf_t);
-  // constexpr matx::index_t nperseg = 64;
-  // constexpr matx::index_t nfft = 64;
-  // constexpr matx::index_t noverlap = nperseg / 8;
-  // constexpr matx::index_t nstep = nperseg - noverlap;
+  //auto Pxx  = make_tensor<float>({sat});
+  (out_tmp_t = pwelch(infc_t, nfft, 64, nfft)).run(stream);
 
-  // auto stackedMatrix = inf_t.OverlapView({nperseg}, {nstep});
-
-  // auto fftStackedMatrix = matx::make_tensor<cuda::std::complex<float>>({(samps - noverlap) / nstep, nfft / 2 + 1}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
-
-  // // FFT along rows
-  // matx::fft(fftStackedMatrix, stackedMatrix, 0, stream);
-  // // Absolute value
-  // (fftStackedMatrix = matx::conj(fftStackedMatrix) * fftStackedMatrix).run(stream);
-  // // Get real part and transpose
-  // auto Sxx = fftStackedMatrix.RealView().Permute({1, 0});  
-  // matx::print(Sxx);
+  (out_doublebuf_t = fftshift1D( matx::log10(out_tmp_t))).run(stream);
 }
 
 __global__ void print_kernel(uint8_t *in, int len) {

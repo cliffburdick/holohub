@@ -79,8 +79,8 @@ advanced_network:
 
 bench_rx:
   split_boundary: true
-  batch_size: 10000
-  max_packet_size: 7680
+  batch_size: 10240
+  max_packet_size: 8064
 
 
 # bench_tx:
