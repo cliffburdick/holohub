@@ -136,7 +136,7 @@ class AdvNetworkingBenchRxOp : public Operator {
 
     cudaMallocHost(&full_batch_data_h_, batch_size_.get() * nom_payload_size_);
     cudaMalloc(&full_batch_data_d_,     batch_size_.get() * nom_payload_size_);
-    cudaMallocHost(&spec_output_, fft_size_ * sizeof(float));
+    cudaMallocHost(&spec_output_, fft_size_ * sizeof(cuda::std::complex<float>));
 
     if (hds_.get()) {
       cudaMallocHost((void**)&h_dev_ptrs_, sizeof(void*) * batch_size_.get());
@@ -209,11 +209,9 @@ class AdvNetworkingBenchRxOp : public Operator {
         simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_), h_dev_ptrs_,
                       nom_payload_size_, batch_size_.get());
         auto cview = (float *)full_batch_data_d_;
-
         //launch_print((uint8_t*)h_dev_ptrs_[0], 64);
         process_input((int16_t*)full_batch_data_d_, spec_output_, fft_size_, 0);
-        nats.SendToGUI((void*)spec_output_, "spec_output", 256*sizeof(float));
-
+        nats.SendToGUI((void*)spec_output_, "spec_output", 16384*sizeof(float));
         if (cudaGetLastError() != cudaSuccess)  {
           HOLOSCAN_LOG_ERROR("CUDA error with {} packets in batch and {} bytes total",
                   batch_size_.get(), batch_size_.get()*nom_payload_size_);
@@ -249,7 +247,7 @@ class AdvNetworkingBenchRxOp : public Operator {
   Parameter<uint32_t> batch_size_;           // Batch size for one processing block
   Parameter<uint16_t> max_packet_size_;      // Maximum size of a single packet
   NATS nats;
-  static constexpr int fft_size_ = 16384;
+  static constexpr int fft_size_ = 1048576;
 };
 
 }  // namespace holoscan::ops

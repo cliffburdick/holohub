@@ -1015,7 +1015,7 @@ int DpdkMgr::rx_core(void *arg) {
         // for (int i = 0; i < ((struct rte_mbuf*)burst->cpu_pkts[0])->data_len; i++) {
         //   printf("%02x ", pkt[i]);
         // }
-        // printf("\n");
+        //printf("gg\n");
         rte_ring_enqueue(tparams->ring, reinterpret_cast<void *>(burst));
         break;
       }

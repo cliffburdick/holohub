@@ -18,6 +18,7 @@ from typing import Dict
 from common_msg import message_type, ext_msg
 from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 
+MAX_Q_SIZE = 5
 
 async def async_sub_handler(msg: nats.aio.msg.Msg, q: Dict[str,Queue]):
     """Handle incoming messages
@@ -27,7 +28,7 @@ async def async_sub_handler(msg: nats.aio.msg.Msg, q: Dict[str,Queue]):
         q (Queue): Receive queue to push message to
     """
     #logger.debug(f"Message arrived on NATS queue with subject {msg.subject}")
-    if msg.subject in q:
+    if msg.subject in q and q[msg.subject].qsize() < MAX_Q_SIZE:
         q[msg.subject].put(msg.data, block=False)
 
 

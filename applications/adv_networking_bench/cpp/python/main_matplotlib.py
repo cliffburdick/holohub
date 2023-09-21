@@ -16,7 +16,7 @@ import time
 
 L = 1228800
 BW = 100
-FFT_SIZE = 256
+FFT_SIZE = 16384
 
 np.set_printoptions(threshold=np.inf)
 
@@ -33,11 +33,12 @@ l1 = FFT_SIZE
 x = np.linspace(-Fs/2, Fs/2 - Fs/l1, l1)/1e6
 #fig = plt.figure()
 fig, ax1 = plt.subplots()
-line, = ax1.plot(x, np.random.randn(FFT_SIZE))
+line_data = np.random.randn(FFT_SIZE)
+line, = ax1.plot(x, line_data)
 plt.grid()
 
 def init():
-  #ax1.set_ylim(-120, 0)
+  ax1.set_ylim(-10, 80)
   ax1.set_title('JESD output of MxFE')
   ax1.set_ylabel('Power (dB)')
   ax1.set_xlabel('Frequency (MHz)')
@@ -53,8 +54,9 @@ def animate(i):
     y = np.frombuffer(data, dtype=np.float32)
     #print(y)
     #ax1.clear()
+    line_data = y
+    line.set_ydata(line_data)
 
-    line.set_ydata(y)
     print("Update")
   except Empty:
     pass
