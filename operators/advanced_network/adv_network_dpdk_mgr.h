@@ -67,7 +67,7 @@ class DpdkMgr {
           rte_mempool *burst_pool, rte_mempool *meta_pool);
     static constexpr int JUMBFRAME_SIZE = 9100;
     static constexpr int DEFAULT_NUM_TX_BURST = 256;
-    static constexpr int DEFAULT_NUM_RX_BURST = 1024;
+    static constexpr int DEFAULT_NUM_RX_BURST = 64;
     uint16_t default_num_rx_desc = 8192;
     uint16_t default_num_tx_desc = 8192;
     int num_ports = 0;

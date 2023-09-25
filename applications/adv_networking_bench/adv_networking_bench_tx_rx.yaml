@@ -66,7 +66,7 @@ advanced_network:
             split_boundary: 64
             cpu_cores: "11"
             max_packet_size: 9000     # Maximum payload size
-            num_concurrent_batches: 20   # Number of batches that can be used at any time
+            num_concurrent_batches: 15   # Number of batches that can be used at any time
             batch_size: 10000              # Number of packets in a batch
         flows:
           - name: "ADC Samples"

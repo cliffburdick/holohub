@@ -172,6 +172,7 @@ void DpdkMgr::Initialize() {
   strncpy(_argv[arg++], "adv_net_operator", max_arg_size - 1);
   strncpy(_argv[arg++], "-l", max_arg_size - 1);
   strncpy(_argv[arg++], cores.c_str(), max_arg_size - 1);
+
   //  strncpy(_argv[arg++], "--log-level=99", max_arg_size - 1);
   //  strncpy(_argv[arg++], "--log-level=pmd.net.mlx5:8", max_arg_size - 1);
   for (const auto &name : ifs) {
@@ -298,9 +299,9 @@ void DpdkMgr::Initialize() {
           return;
         }
 
-        ext_mem.buf_len = RTE_ALIGN_CEIL(rx_mbufs * ext_mem.elt_size, GPU_PAGE_SIZE);
-        HOLOSCAN_LOG_DEBUG("Allocated {} buffers totalling {} bytes of GPU memory for packets",
-              rx_mbufs, ext_mem.buf_len);
+        ext_mem.buf_len = RTE_ALIGN_CEIL(static_cast<size_t>(rx_mbufs) * static_cast<size_t>(ext_mem.elt_size), GPU_PAGE_SIZE);
+        HOLOSCAN_LOG_INFO("Allocated {} buffers elt_size={} totaling {} bytes of GPU memory for packets",
+              rx_mbufs, ext_mem.elt_size, ext_mem.buf_len);
         ext_mem.buf_iova = RTE_BAD_IOVA;
 
   #pragma GCC diagnostic push
@@ -308,7 +309,7 @@ void DpdkMgr::Initialize() {
         ext_mem.buf_ptr = rte_gpu_mem_alloc(q.common_.gpu_dev_, ext_mem.buf_len, CPU_PAGE_SIZE);
   #pragma GCC diagnostic pop
         if (ext_mem.buf_ptr == NULL) {
-          HOLOSCAN_LOG_CRITICAL("Could not allocate GPU device memory");
+          HOLOSCAN_LOG_CRITICAL("Could not allocate {:.2f}MB of GPU memory", ext_mem.buf_len/1e6);
           return;
         } else {
           HOLOSCAN_LOG_INFO("Allocated {:.2f}MB on GPU", ext_mem.buf_len/1e6);
@@ -929,11 +930,11 @@ int DpdkMgr::rx_core(void *arg) {
   RxWorkerParams *tparams = (RxWorkerParams*)arg;
   struct rte_mbuf * rx_mbufs[DEFAULT_NUM_RX_BURST];
   int ret = 0;
-
   uint64_t freq = rte_get_tsc_hz();
   uint64_t timeout_ticks = freq * 0.02;  // expect all packets within 20ms
 
   uint64_t total_pkts = 0;
+  suseconds_t max_memcpy = 0;
 
   flush_packets(tparams->port);
   struct rte_mbuf* mbuf_arr[DEFAULT_NUM_RX_BURST];
@@ -972,6 +973,7 @@ int DpdkMgr::rx_core(void *arg) {
 
     if (nb_rx > 0) {
       memcpy(&burst->cpu_pkts[0], &mbuf_arr[to_copy], sizeof(rte_mbuf*) * nb_rx);
+
       burst->hdr.hdr.num_pkts = nb_rx;
 
       if (tparams->hds) {
@@ -991,6 +993,7 @@ int DpdkMgr::rx_core(void *arg) {
     do {
       int burst_size = std::min((uint32_t)DEFAULT_NUM_RX_BURST,
           (uint32_t)(tparams->batch_size - burst->hdr.hdr.num_pkts));
+
       nb_rx  = rte_eth_rx_burst(tparams->port, tparams->queue,
           reinterpret_cast<rte_mbuf**>(&mbuf_arr[0]), DEFAULT_NUM_RX_BURST);
 
@@ -1007,15 +1010,10 @@ int DpdkMgr::rx_core(void *arg) {
       }
 
       burst->hdr.hdr.num_pkts += to_copy;
+      total_pkts          += nb_rx;      
       nb_rx               -= to_copy;
-      total_pkts          += nb_rx;
 
       if (burst->hdr.hdr.num_pkts == tparams->batch_size) {
-        // auto *pkt  = rte_pktmbuf_mtod((struct rte_mbuf*)burst->cpu_pkts[0], uint8_t*);
-        // for (int i = 0; i < ((struct rte_mbuf*)burst->cpu_pkts[0])->data_len; i++) {
-        //   printf("%02x ", pkt[i]);
-        // }
-        //printf("gg\n");
         rte_ring_enqueue(tparams->ring, reinterpret_cast<void *>(burst));
         break;
       }
