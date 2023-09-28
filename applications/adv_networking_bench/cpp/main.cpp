@@ -135,11 +135,17 @@ class AdvNetworkingBenchRxOp : public Operator {
     nom_payload_size_ = max_packet_size_.get() - sizeof(UDPIPV4Pkt) - 22;
 
     cudaMallocHost(&full_batch_data_h_, batch_size_.get() * nom_payload_size_);
-    cudaMalloc(&full_batch_data_d_,     batch_size_.get() * nom_payload_size_);
-    cudaMallocHost(&spec_output_, fft_size_ * sizeof(cuda::std::complex<float>));
+    for (int n = 0; n < num_concurrent; n++) {
+      cudaMallocHost(&spec_output_h_[n], fft_size_ * sizeof(cuda::std::complex<float>));
+      cudaMalloc(&spec_output_d_[n], (1<<20) * sizeof(cuda::std::complex<float>));
+      cudaMalloc(&full_batch_data_d_[n],     batch_size_.get() * nom_payload_size_);
 
-    if (hds_.get()) {
-      cudaMallocHost((void**)&h_dev_ptrs_, sizeof(void*) * batch_size_.get());
+      if (hds_.get()) {
+        cudaMallocHost((void**)&h_dev_ptrs_[n], sizeof(void*) * batch_size_.get());
+      }
+
+      cudaStreamCreate(&streams_[n]);
+      cudaEventCreate(&events_[n]);
     }
 
     nats.Init("nats://localhost:4222");
@@ -176,7 +182,7 @@ class AdvNetworkingBenchRxOp : public Operator {
     if (hds_.get()) {
       int64_t bytes_in_batch = 0;
       for (int p = 0; p < adv_net_get_num_pkts(burst); p++) {
-        h_dev_ptrs_[aggr_pkts_recv_ + p]   = adv_net_get_gpu_pkt_ptr(burst, p);
+        h_dev_ptrs_[cur_idx][aggr_pkts_recv_ + p]   = adv_net_get_gpu_pkt_ptr(burst, p);
         ttl_bytes_in_cur_batch_           +=
           adv_net_get_gpu_packet_len(burst, p) + sizeof(UDPIPV4Pkt) + 22;
       }
@@ -198,7 +204,7 @@ class AdvNetworkingBenchRxOp : public Operator {
       }
     }
 
-    burst_bufs_[burst_buf_idx_++] = burst;
+    burst_bufs_[cur_idx] = burst;
     aggr_pkts_recv_ += adv_net_get_num_pkts(burst);
 
     if (aggr_pkts_recv_ >= batch_size_.get()) {
@@ -206,48 +212,59 @@ class AdvNetworkingBenchRxOp : public Operator {
       aggr_pkts_recv_ = 0;
 
       if (hds_.get()) {
-        simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_), h_dev_ptrs_,
-                      nom_payload_size_, batch_size_.get());
-        auto cview = (float *)full_batch_data_d_;
-        //launch_print((uint8_t*)h_dev_ptrs_[0], 64);
-        process_input((int16_t*)full_batch_data_d_, spec_output_, fft_size_, 0);
-        nats.SendToGUI((void*)spec_output_, "spec_output", 16384*sizeof(float));
+        if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
+          HOLOSCAN_LOG_ERROR("Fell behind in processing on GPU!");
+          return;
+        }
+        else {
+          adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
+          nats.SendToGUI((void*)spec_output_h_[cur_idx], "spec_output", fft_size_*sizeof(float));
+        }
+
+        simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_[cur_idx]), h_dev_ptrs_[cur_idx],
+                      nom_payload_size_, batch_size_.get(), streams_[cur_idx]);
+
+        process_input((int16_t*)full_batch_data_d_[cur_idx], spec_output_d_[cur_idx], fft_size_, streams_[cur_idx]);
+        cudaMemcpyAsync(spec_output_h_[cur_idx], spec_output_d_[cur_idx], fft_size_*sizeof(float), cudaMemcpyDefault);
+        cudaEventRecord(events_[cur_idx]);
+
         if (cudaGetLastError() != cudaSuccess)  {
           HOLOSCAN_LOG_ERROR("CUDA error with {} packets in batch and {} bytes total",
                   batch_size_.get(), batch_size_.get()*nom_payload_size_);
           exit(1);
         }
 
-        for (int b = 0; b < burst_buf_idx_; b++) {
-          adv_net_free_all_burst_pkts_and_burst(burst_bufs_[b]);
-        }
       } else {
-        for (int b = 0; b < burst_buf_idx_; b++) {
-          adv_net_free_cpu_pkts_and_burst(burst_bufs_[b]);
-        }
+        adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
       }
 
-      burst_buf_idx_ = 0;
+      cur_idx = (++cur_idx % num_concurrent);
     }
   }
 
  private:
   // Holds burst buffers that cannot be freed yet
-  std::array<std::shared_ptr<AdvNetBurstParams>, 256> burst_bufs_;
+  static constexpr int fft_size_ = 16384;
+  static constexpr int num_concurrent = 4;  
+  std::array<std::shared_ptr<AdvNetBurstParams>, num_concurrent> burst_bufs_;
   int     burst_buf_idx_ = 0;                // Index into burst_buf_idx_ of current burst
   int64_t ttl_bytes_recv_ = 0;               // Total bytes received in operator
   int64_t ttl_pkts_recv_ = 0;                // Total packets received in operator
   int64_t aggr_pkts_recv_ = 0;               // Aggregate packets received in processing batch
   uint16_t nom_payload_size_;                // Nominal payload size (no headers)
-  float *spec_output_;
-  void **h_dev_ptrs_;                        // Host-pinned list of device pointers
+  std::array<float *, num_concurrent> spec_output_h_;
+  std::array<float *, num_concurrent> spec_output_d_;
+  std::array<void **, num_concurrent> h_dev_ptrs_;   // Host-pinned list of device pointers
   void *full_batch_data_h_;                  // Host-pinned aggregated batch
-  void *full_batch_data_d_;                  // Device aggregated batch
+  std::array<void *, num_concurrent>  full_batch_data_d_;                  // Device aggregated batch
   Parameter<bool> hds_;                      // Header-data split enabled
   Parameter<uint32_t> batch_size_;           // Batch size for one processing block
   Parameter<uint16_t> max_packet_size_;      // Maximum size of a single packet
   NATS nats;
-  static constexpr int fft_size_ = 1048576;
+
+  std::array<cudaStream_t, num_concurrent> streams_;
+  std::array<cudaEvent_t, num_concurrent> events_;
+  int cur_idx = 0;
 };
 
 }  // namespace holoscan::ops

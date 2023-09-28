@@ -56,6 +56,6 @@ __global__ void simple_packet_reorder_kernel(void * __restrict__ out,
  * @param num_pkts Number of packets
  */
 void simple_packet_reorder(void *out, const void *const *const in,
-          uint16_t pkt_len, uint32_t num_pkts) {
-  simple_packet_reorder_kernel<<<num_pkts, 128>>>(out, in, pkt_len, num_pkts);
+          uint16_t pkt_len, uint32_t num_pkts, cudaStream_t stream) {
+  simple_packet_reorder_kernel<<<num_pkts, 128, 0, stream>>>(out, in, pkt_len, num_pkts);
 }
