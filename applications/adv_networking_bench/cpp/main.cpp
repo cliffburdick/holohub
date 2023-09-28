@@ -204,7 +204,6 @@ class AdvNetworkingBenchRxOp : public Operator {
       }
     }
 
-    burst_bufs_[cur_idx] = burst;
     aggr_pkts_recv_ += adv_net_get_num_pkts(burst);
 
     if (aggr_pkts_recv_ >= batch_size_.get()) {
@@ -214,10 +213,13 @@ class AdvNetworkingBenchRxOp : public Operator {
       if (hds_.get()) {
         if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
           HOLOSCAN_LOG_ERROR("Fell behind in processing on GPU!");
+          adv_net_free_all_burst_pkts_and_burst(burst);
           return;
         }
         else {
-          adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
+          if (burst_bufs_[cur_idx] != nullptr) {
+            adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
+          }
           nats.SendToGUI((void*)spec_output_h_[cur_idx], "spec_output", fft_size_*sizeof(float));
         }
 
@@ -235,8 +237,10 @@ class AdvNetworkingBenchRxOp : public Operator {
         }
 
       } else {
-        adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
+        adv_net_free_all_burst_pkts_and_burst(burst);
       }
+
+      burst_bufs_[cur_idx] = burst;
 
       cur_idx = (++cur_idx % num_concurrent);
     }
@@ -246,7 +250,7 @@ class AdvNetworkingBenchRxOp : public Operator {
   // Holds burst buffers that cannot be freed yet
   static constexpr int fft_size_ = 16384;
   static constexpr int num_concurrent = 4;  
-  std::array<std::shared_ptr<AdvNetBurstParams>, num_concurrent> burst_bufs_;
+  std::array<std::shared_ptr<AdvNetBurstParams>, num_concurrent> burst_bufs_{nullptr};
   int     burst_buf_idx_ = 0;                // Index into burst_buf_idx_ of current burst
   int64_t ttl_bytes_recv_ = 0;               // Total bytes received in operator
   int64_t ttl_pkts_recv_ = 0;                // Total packets received in operator

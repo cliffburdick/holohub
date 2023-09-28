@@ -285,7 +285,7 @@ void DpdkMgr::Initialize() {
       max_batch_size = std::max(max_batch_size, q.common_.batch_size_);
       max_pkt_size   = std::max(max_pkt_size, q.common_.max_packet_size_);
 
-      if (q.common_.gpu_direct_ && q.common_.hds_ > 0) {
+      if (q.common_.gpu_direct_) {
         auto target_el_size = (q.common_.max_packet_size_ - q.common_.hds_) + RTE_PKTMBUF_HEADROOM;
         ext_mem.elt_size = ((target_el_size + 3) / 4) * 4;
         HOLOSCAN_LOG_INFO(
@@ -333,54 +333,68 @@ void DpdkMgr::Initialize() {
           return;
         }
 
-        std::string gpu_name = std::string("RX_GPU_POOL") + append;
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-        q_backend->pools[1] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), rx_mbufs,
-            0, 0, ext_mem.elt_size, rte_socket_id(), &ext_mem, 1);
-  #pragma GCC diagnostic pop
-        if (q_backend->pools[1] == NULL) {
-          HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
-          return;
+        if (q.common_.hds_ == 0) {
+          std::string gpu_name = std::string("RX_GPU_POOL") + append;
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+          q_backend->pools[0] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), rx_mbufs,
+              0, 0, ext_mem.elt_size, rte_socket_id(), &ext_mem, 1);
+    #pragma GCC diagnostic pop
+          if (q_backend->pools[0] == NULL) {
+            HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
+            return;
+          }
         }
+        else {
+          std::string gpu_name = std::string("RX_GPU_POOL") + append;
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+          q_backend->pools[1] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), rx_mbufs,
+              0, 0, ext_mem.elt_size, rte_socket_id(), &ext_mem, 1);
+    #pragma GCC diagnostic pop
+          if (q_backend->pools[1] == NULL) {
+            HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
+            return;
+          }
 
-        HOLOSCAN_LOG_INFO("Created GPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
-            gpu_name, rx_mbufs, ext_mem.elt_size, (void*)q_backend->pools[1]);
+          HOLOSCAN_LOG_INFO("Created GPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
+              gpu_name, rx_mbufs, ext_mem.elt_size, (void*)q_backend->pools[1]);
 
-        auto cpu_name = std::string("RX_CPU_POOL") + append;
-        q_backend->pools[0] = rte_pktmbuf_pool_create(cpu_name.c_str(),
-            rx_mbufs,  MEMPOOL_CACHE_SIZE, 0, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
-                rte_socket_id());
-        if (!q_backend->pools[0]) {
-          HOLOSCAN_LOG_CRITICAL("Could not create sysmem mempool {} buffer split: {}",
-              cpu_name, rte_errno);
-          return;
+          auto cpu_name = std::string("RX_CPU_POOL") + append;
+          q_backend->pools[0] = rte_pktmbuf_pool_create(cpu_name.c_str(),
+              rx_mbufs,  MEMPOOL_CACHE_SIZE, 0, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
+                  rte_socket_id());
+          if (!q_backend->pools[0]) {
+            HOLOSCAN_LOG_CRITICAL("Could not create sysmem mempool {} buffer split: {}",
+                cpu_name, rte_errno);
+            return;
+          }
+
+          HOLOSCAN_LOG_INFO("Created CPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
+            cpu_name, rx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM, (void*)q_backend->pools[0]);
+
+          memcpy(&q_backend->rxconf_qsplit, &dev_info.default_rxconf,
+              sizeof(q_backend->rxconf_qsplit));
+
+          q_backend->rxconf_qsplit.offloads =
+              RTE_ETH_RX_OFFLOAD_SCATTER | RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
+          q_backend->rxconf_qsplit.rx_nseg  = BUFFER_SPLIT_SEGS;
+          q_backend->rxconf_qsplit.rx_seg   = q_backend->rx_useg;
+
+          struct rte_eth_rxseg_split *rx_seg;
+          rx_seg = &q_backend->rx_useg[0].split;
+          rx_seg->mp = q_backend->pools[0];
+          rx_seg->length = q.common_.hds_;
+          rx_seg->offset = 0;
+
+          rx_seg = &q_backend->rx_useg[1].split;
+          rx_seg->mp = q_backend->pools[1];
+          rx_seg->length = 0;
+          rx_seg->offset = 0;
+
+          local_port_conf[rx.port_id_].rxmode.offloads |=
+              RTE_ETH_RX_OFFLOAD_SCATTER | RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
         }
-
-        HOLOSCAN_LOG_INFO("Created CPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
-          cpu_name, rx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM, (void*)q_backend->pools[0]);
-
-        memcpy(&q_backend->rxconf_qsplit, &dev_info.default_rxconf,
-            sizeof(q_backend->rxconf_qsplit));
-
-        q_backend->rxconf_qsplit.offloads =
-            RTE_ETH_RX_OFFLOAD_SCATTER | RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
-        q_backend->rxconf_qsplit.rx_nseg  = BUFFER_SPLIT_SEGS;
-        q_backend->rxconf_qsplit.rx_seg   = q_backend->rx_useg;
-
-        struct rte_eth_rxseg_split *rx_seg;
-        rx_seg = &q_backend->rx_useg[0].split;
-        rx_seg->mp = q_backend->pools[0];
-        rx_seg->length = q.common_.hds_;
-        rx_seg->offset = 0;
-
-        rx_seg = &q_backend->rx_useg[1].split;
-        rx_seg->mp = q_backend->pools[1];
-        rx_seg->length = 0;
-        rx_seg->offset = 0;
-
-        local_port_conf[rx.port_id_].rxmode.offloads |=
-            RTE_ETH_RX_OFFLOAD_SCATTER | RTE_ETH_RX_OFFLOAD_BUFFER_SPLIT;
       } else {
         /* Create the mbuf pools. */
         auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM + MAX_ETH_HDR_SIZE;
