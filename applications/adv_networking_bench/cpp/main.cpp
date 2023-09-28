@@ -137,7 +137,7 @@ class AdvNetworkingBenchRxOp : public Operator {
     cudaMallocHost(&full_batch_data_h_, batch_size_.get() * nom_payload_size_);
     for (int n = 0; n < num_concurrent; n++) {
       cudaMallocHost(&spec_output_h_[n], fft_size_ * sizeof(cuda::std::complex<float>));
-      cudaMalloc(&spec_output_d_[n], (1<<20) * sizeof(cuda::std::complex<float>));
+      cudaMalloc(&spec_output_d_[n], fft_size_ * sizeof(cuda::std::complex<float>));
       cudaMalloc(&full_batch_data_d_[n],     batch_size_.get() * nom_payload_size_);
 
       if (hds_.get()) {

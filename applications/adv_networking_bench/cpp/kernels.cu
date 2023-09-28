@@ -31,35 +31,24 @@ __global__ void i16tofp32(const int16_t *in, cuda::std::complex<float> *out, int
   }
 }
 
+using ftype = float;
+using ctype = cuda::std::complex<ftype>;
 
-void process_input(int16_t *in, float *out, int num_samps, cudaStream_t stream) {
+
+void process_input(int16_t *in, ftype *out, int num_samps, cudaStream_t stream) {
   constexpr int SAMP_PER_CLK = 4;
   constexpr int Fs = 2949120000/3;
-  constexpr int samps = 1048576;
+  constexpr int samps = 1048576 * 18;
   constexpr int nfft = 16384;
-  auto in_t = matx::make_tensor<int16_t, 1>(in, {samps*2});
-//printf("h\n");
-  auto inf_t = matx::make_tensor<float, 1>((float*)out, {samps*2});
-  //auto out_t = matx::make_tensor<cuda::std::complex<float>, 1>((cuda::std::complex<float>*)out, {samps});
+  auto in_t             = matx::make_tensor<int16_t>(in, {samps*2});
+  auto out_convert_t    = matx::make_tensor<ftype>({samps*2}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
+  auto out_tmp_t        = matx::make_tensor<ftype>({nfft}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
+  auto infc_t           = matx::make_tensor<ctype>((ctype*)out_convert_t.Data(), {samps});
+  auto out_doublebuf_t  = matx::make_tensor<ftype>((ftype*)out, {nfft});
 
-  auto out_tmp_t = matx::make_tensor<float, 1>({nfft}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
-  //auto out_cplx_t = matx::make_tensor<cuda::std::complex<float>, 1>({samps}, matx::MATX_ASYNC_DEVICE_MEMORY, stream);
-
-  auto infc_t = matx::make_tensor<cuda::std::complex<float>, 1>((cuda::std::complex<float>*)out, {samps});
-  auto out_doublebuf_t = matx::make_tensor<float, 1>((float*)out, {nfft});
-//printf("h\n");
-  (inf_t = in_t / 32768.0).run(stream);
-//matx::print(infc_t);
-  // (out_cplx_t = out_t * matx::hanning<0>(out_t.Shape())).run(stream);
-//printf("h\n");
-  // (out_cplx_t = matx::fft(out_cplx_t)).run(stream);
-  // (out_doublebuf_t = 20.0f * fftshift1D( matx::log10(matx::abs(out_cplx_t)) - 
-  //                                       log10(static_cast<float>(out_t.Size(0)) / 2.0f)
-  //                                     )).run(stream);
-
-  //auto Pxx  = make_tensor<float>({sat});
-  (out_tmp_t = pwelch(infc_t, nfft, 16, nfft)).run(stream);
-  (out_doublebuf_t = fftshift1D( 10*matx::log10(out_tmp_t))).run(stream);
+  (out_convert_t = in_t / 32768.0).run(stream);
+  (out_tmp_t = pwelch(infc_t, matx::hanning<0>({nfft}), nfft, 16, nfft)).run(stream);
+  (out_doublebuf_t = fftshift1D( 10.f*matx::log10(out_tmp_t))).run(stream);
 }
 
 __global__ void print_kernel(uint8_t *in, int len) {
