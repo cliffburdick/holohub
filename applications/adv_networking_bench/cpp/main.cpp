@@ -225,7 +225,7 @@ class AdvNetworkingBenchRxOp : public Operator {
                       nom_payload_size_, batch_size_.get(), streams_[cur_idx]);
 
         process_input((int16_t*)full_batch_data_d_[cur_idx], spec_output_d_[cur_idx], fft_size_, streams_[cur_idx]);
-        cudaMemcpyAsync(spec_output_h_[cur_idx], spec_output_d_[cur_idx], fft_size_*sizeof(float), cudaMemcpyDefault);
+        cudaMemcpyAsync(spec_output_h_[cur_idx], spec_output_d_[cur_idx], fft_size_*sizeof(float), cudaMemcpyDefault, streams_[cur_idx]);
         cudaEventRecord(events_[cur_idx]);
 
         if (cudaGetLastError() != cudaSuccess)  {
