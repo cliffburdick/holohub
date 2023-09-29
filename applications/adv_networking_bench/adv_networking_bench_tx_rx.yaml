@@ -63,7 +63,7 @@ advanced_network:
             id: 1
             gpu_device: 0
             gpu_direct: true
-            split_boundary: 64
+            split_boundary: 0
             cpu_cores: "11"
             max_packet_size: 9000     # Maximum payload size
             num_concurrent_batches: 15   # Number of batches that can be used at any time
@@ -78,9 +78,11 @@ advanced_network:
               udp_dst: 12288
 
 bench_rx:
-  split_boundary: true
+  split_boundary: false
+  gpu_direct: true
   batch_size: 10240
   max_packet_size: 8064
+  header_size: 64
 
 
 # bench_tx:

@@ -53,6 +53,7 @@ struct RxWorkerParams {
   struct rte_mempool *burst_pool;
   struct rte_mempool *meta_pool;
   uint64_t rx_pkts = 0;
+  bool gpu_direct;
   bool hds;
 };
 
@@ -288,9 +289,6 @@ void DpdkMgr::Initialize() {
       if (q.common_.gpu_direct_) {
         auto target_el_size = (q.common_.max_packet_size_ - q.common_.hds_) + RTE_PKTMBUF_HEADROOM;
         ext_mem.elt_size = ((target_el_size + 3) / 4) * 4;
-        HOLOSCAN_LOG_INFO(
-            "Enabling header-data split on RX with split point of {} and GPU payload size {}",
-              q.common_.hds_, ext_mem.elt_size);
 
         struct rte_eth_dev_info dev_info;
         ret = rte_eth_dev_info_get(rx.port_id_, &dev_info);
@@ -344,8 +342,15 @@ void DpdkMgr::Initialize() {
             HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
             return;
           }
+
+          HOLOSCAN_LOG_INFO("Created GPU mempool for GPUDirect: {} mbufs={} elsize={} ptr={}",
+              gpu_name, rx_mbufs, ext_mem.elt_size, (void*)q_backend->pools[0]);
         }
         else {
+          HOLOSCAN_LOG_INFO(
+              "Enabling header-data split on RX with split point of {} and GPU payload size {}",
+                q.common_.hds_, ext_mem.elt_size);
+
           std::string gpu_name = std::string("RX_GPU_POOL") + append;
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -397,7 +402,7 @@ void DpdkMgr::Initialize() {
         }
       } else {
         /* Create the mbuf pools. */
-        auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM + MAX_ETH_HDR_SIZE;
+        auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM;
         auto name = std::string("RX_CPU_POOL") + append;
         q_backend->pools[0] = rte_pktmbuf_pool_create(name.c_str(),
             rx_mbufs, MEMPOOL_CACHE_SIZE, 0, pkt_size, rte_socket_id());
@@ -411,9 +416,12 @@ void DpdkMgr::Initialize() {
       }
     }
 
+    HOLOSCAN_LOG_INFO("Setting port config for port {} mtu:{}", rx.port_id_, max_pkt_size);
     local_port_conf[rx.port_id_].rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
-    local_port_conf[rx.port_id_].rxmode.mtu = max_pkt_size;
-    local_port_conf[rx.port_id_].rxmode.max_lro_pkt_size = max_pkt_size;
+
+    // Subtract eth headers since driver adds that on
+    local_port_conf[rx.port_id_].rxmode.mtu = max_pkt_size - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
+    local_port_conf[rx.port_id_].rxmode.max_lro_pkt_size = max_pkt_size - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
   }
 
   HOLOSCAN_LOG_INFO("Setting up RX ring");
@@ -544,7 +552,7 @@ void DpdkMgr::Initialize() {
     return;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up TX burst pool with {} pointers at {}", max_batch_size, (void*)tx_burst_buffer);  
+  HOLOSCAN_LOG_INFO("Setting up TX burst pool with {} pointers at {}", max_batch_size, (void*)tx_burst_buffer);
 
   for (const auto &[port, queues] : port_q_num) {
     HOLOSCAN_LOG_INFO("Initializing port {} with {} RX queues and {} TX queues...",
@@ -587,6 +595,8 @@ void DpdkMgr::Initialize() {
         auto socketid = rte_lcore_to_socket_id(strtol(q.common_.cpu_cores_.c_str(), nullptr, 10));
         auto qinfo    = static_cast<DPDKQueueConfig *>(q.common_.backend_config_);
 
+        HOLOSCAN_LOG_INFO("Setting up port:{}, queue:{}, GPUDirect:{}, Header-data split:{}",
+          rx.port_id_, q.common_.id_, q.common_.gpu_direct_, q.common_.hds_);
         if (q.common_.gpu_direct_ && q.common_.hds_ > 0) {
           ret = rte_eth_rx_queue_setup(rx.port_id_, q.common_.id_,
                 default_num_rx_desc, socketid, &qinfo->rxconf_qsplit, NULL);
@@ -668,7 +678,7 @@ void DpdkMgr::Initialize() {
     else {
       HOLOSCAN_LOG_INFO("Not enabling promiscuous mode on port {} since flow isolation is enabled", rx.port_id_);
     }
-    
+
     for (const auto &flow : rx.flows_) {
       HOLOSCAN_LOG_INFO("Adding RX flow {}", flow.name_);
       AddFlow(rx.port_id_, flow);
@@ -860,6 +870,7 @@ void DpdkMgr::Run() {
     for (auto &q : rx.queues_) {
       auto qinfo = static_cast<DPDKQueueConfig *>(q.common_.backend_config_);
       auto params = new RxWorkerParams;
+      params->gpu_direct = q.common_.gpu_direct_;
       params->hds    = q.common_.hds_ > 0;
       params->port   = rx.port_id_;
       params->ring   = rx_ring;
@@ -967,38 +978,60 @@ int DpdkMgr::rx_core(void *arg) {
       exit(1);
     }
 
-    if (rte_mempool_get(tparams->burst_pool, reinterpret_cast<void **>(&burst->cpu_pkts)) < 0) {
-      HOLOSCAN_LOG_ERROR("Processing function falling behind. No free CPU buffers for packets!");
-      continue;
-    }
-
     //  Queue ID for receiver to differentiate
     burst->hdr.hdr.q_id = tparams->queue;
 
-    if (tparams->hds) {
-      if (rte_mempool_get(tparams->burst_pool, reinterpret_cast<void **>(&burst->gpu_pkts)) < 0) {
-        HOLOSCAN_LOG_ERROR("Processing function falling behind. No free GPU buffers for packets!");
-        rte_mempool_put(tparams->burst_pool, burst->cpu_pkts);
+    if (!tparams->gpu_direct || tparams->hds) {
+      if (rte_mempool_get(tparams->burst_pool, reinterpret_cast<void **>(&burst->cpu_pkts)) < 0) {
+        HOLOSCAN_LOG_ERROR("Processing function falling behind. No free CPU buffers for packets!");
         continue;
       }
+    }
+    else {
+      burst->cpu_pkts = nullptr;
+    }
+
+    if (tparams->gpu_direct) {
+      if (rte_mempool_get(tparams->burst_pool, reinterpret_cast<void **>(&burst->gpu_pkts)) < 0) {
+        HOLOSCAN_LOG_ERROR("Processing function falling behind. No free GPU buffers for packets!");
+        if (!tparams->gpu_direct || tparams->hds) {
+          rte_mempool_put(tparams->burst_pool, burst->cpu_pkts);
+        }
+        continue;
+      }
+      else {
+        if (burst->gpu_pkts == nullptr) {
+          printf("uh oh\n");
+        }
+      }
     } else {
+      printf("setting null\n");
       burst->gpu_pkts = nullptr;
     }
 
     if (nb_rx > 0) {
-      memcpy(&burst->cpu_pkts[0], &mbuf_arr[to_copy], sizeof(rte_mbuf*) * nb_rx);
-
       burst->hdr.hdr.num_pkts = nb_rx;
 
-      if (tparams->hds) {
-        for (int p = 0; p < nb_rx; p++) {
-          burst->gpu_pkts[p] = mbuf_arr[to_copy + p]->next;
+      if (!tparams->gpu_direct || tparams->hds) {
+        memcpy(&burst->cpu_pkts[0], &mbuf_arr[to_copy], sizeof(rte_mbuf*) * nb_rx);
+
+        if (tparams->hds) {
+          for (int p = 0; p < nb_rx; p++) {
+            burst->gpu_pkts[p] = mbuf_arr[to_copy + p]->next;
+          }
         }
+      }
+      else {
+        memcpy(&burst->gpu_pkts[0], &mbuf_arr[to_copy], sizeof(rte_mbuf*) * nb_rx);
       }
 
       nb_rx = 0;
     } else {
       burst->hdr.hdr.num_pkts = 0;
+    }
+
+    if (burst->gpu_pkts == nullptr) {
+      printf("bad\n");
     }
 
     // DPDK on some ARM platforms requires that you always pass nb_pkts as a number divisible
@@ -1016,15 +1049,21 @@ int DpdkMgr::rx_core(void *arg) {
       }
 
       to_copy       = std::min(nb_rx, (int)(tparams->batch_size - burst->hdr.hdr.num_pkts));
-      memcpy(&burst->cpu_pkts[burst->hdr.hdr.num_pkts], mbuf_arr, sizeof(rte_mbuf*) * to_copy);
-      if (tparams->hds) {
-        for (int p = 0; p < to_copy; p++) {
-          burst->gpu_pkts[burst->hdr.hdr.num_pkts + p] = mbuf_arr[p]->next;
+
+      if (!tparams->gpu_direct || tparams->hds) {
+        memcpy(&burst->cpu_pkts[burst->hdr.hdr.num_pkts], mbuf_arr, sizeof(rte_mbuf*) * to_copy);
+        if (tparams->hds) {
+          for (int p = 0; p < to_copy; p++) {
+            burst->gpu_pkts[burst->hdr.hdr.num_pkts + p] = mbuf_arr[p]->next;
+          }
         }
+      }
+      else {
+        memcpy(&burst->gpu_pkts[burst->hdr.hdr.num_pkts], mbuf_arr, sizeof(rte_mbuf*) * to_copy);
       }
 
       burst->hdr.hdr.num_pkts += to_copy;
-      total_pkts          += nb_rx;      
+      total_pkts          += nb_rx;
       nb_rx               -= to_copy;
 
       if (burst->hdr.hdr.num_pkts == tparams->batch_size) {
@@ -1094,7 +1133,7 @@ int DpdkMgr::tx_core(void *arg) {
     //     gettimeofday(&t1, NULL);
 
     //     timersub(&t1, &t2, &t3);
-    // printf("%ld\n", t3.tv_usec);    
+    // printf("%ld\n", t3.tv_usec);
 
     rte_mempool_put(tparams->burst_pool, static_cast<void*>(msg->cpu_pkts));
     rte_mempool_put(tparams->meta_pool, msg);

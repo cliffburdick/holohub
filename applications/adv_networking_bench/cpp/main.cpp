@@ -140,7 +140,7 @@ class AdvNetworkingBenchRxOp : public Operator {
       cudaMalloc(&spec_output_d_[n], fft_size_ * sizeof(cuda::std::complex<float>));
       cudaMalloc(&full_batch_data_d_[n],     batch_size_.get() * nom_payload_size_);
 
-      if (hds_.get()) {
+      if (gpu_direct_.get()) {
         cudaMallocHost((void**)&h_dev_ptrs_[n], sizeof(void*) * batch_size_.get());
       }
 
@@ -150,6 +150,10 @@ class AdvNetworkingBenchRxOp : public Operator {
 
     nats.Init("nats://localhost:4222");
 
+    if (hds_.get()) {
+      assert(gpu_direct_.get());
+    }
+
     HOLOSCAN_LOG_INFO("AdvNetworkingBenchRxOp::initialize() complete");
   }
 
@@ -157,10 +161,14 @@ class AdvNetworkingBenchRxOp : public Operator {
     spec.input<AdvNetBurstParams>("burst_in");
     spec.param<bool>(hds_, "split_boundary", "Header-data split boundary",
         "Byte boundary where header and data is split", false);
+    spec.param<bool>(gpu_direct_, "gpu_direct", "GPUDirect enabled",
+        "Byte boundary where header and data is split", false);
     spec.param<uint32_t>(batch_size_, "batch_size", "Batch size",
         "Batch size in packets for each processing epoch", 1000);
     spec.param<uint16_t>(max_packet_size_, "max_packet_size",
         "Max packet size", "Maximum packet size expected from sender", 9100);
+    spec.param<uint16_t>(header_size_, "header_size",
+        "Header size", "Header size on each packet from L4 and below", 42);
   }
 
   void compute(InputContext& op_input, OutputContext&, ExecutionContext& context) override {
@@ -179,12 +187,21 @@ class AdvNetworkingBenchRxOp : public Operator {
      * Once enough packets are aggregated, a reorder kernel is launched. In CPU-only mode the
      * entire burst buffer pointer is saved and freed once an entire batch is received.
      */
-    if (hds_.get()) {
+    if (gpu_direct_.get()) {
       int64_t bytes_in_batch = 0;
-      for (int p = 0; p < adv_net_get_num_pkts(burst); p++) {
-        h_dev_ptrs_[cur_idx][aggr_pkts_recv_ + p]   = adv_net_get_gpu_pkt_ptr(burst, p);
-        ttl_bytes_in_cur_batch_           +=
-          adv_net_get_gpu_packet_len(burst, p) + sizeof(UDPIPV4Pkt) + 22;
+      if (hds_.get()) {
+        for (int p = 0; p < adv_net_get_num_pkts(burst); p++) {
+          h_dev_ptrs_[cur_idx][aggr_pkts_recv_ + p]   = adv_net_get_gpu_pkt_ptr(burst, p);
+          ttl_bytes_in_cur_batch_  += adv_net_get_gpu_packet_len(burst, p) +
+                                      adv_net_get_cpu_packet_len(burst, p);
+        }
+      }
+      else {
+        for (int p = 0; p < adv_net_get_num_pkts(burst); p++) {
+          h_dev_ptrs_[cur_idx][aggr_pkts_recv_ + p]   =
+            reinterpret_cast<uint8_t *>(adv_net_get_gpu_pkt_ptr(burst, p)) + header_size_.get();
+          ttl_bytes_in_cur_batch_  += adv_net_get_gpu_packet_len(burst, p);
+        }
       }
 
       ttl_bytes_recv_ += ttl_bytes_in_cur_batch_;
@@ -210,7 +227,7 @@ class AdvNetworkingBenchRxOp : public Operator {
       // Do some work on full_batch_data_h_ or full_batch_data_d_
       aggr_pkts_recv_ = 0;
 
-      if (hds_.get()) {
+      if (gpu_direct_.get()) {
         if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
           HOLOSCAN_LOG_ERROR("Fell behind in processing on GPU!");
           adv_net_free_all_burst_pkts_and_burst(burst);
@@ -241,7 +258,6 @@ class AdvNetworkingBenchRxOp : public Operator {
       }
 
       burst_bufs_[cur_idx] = burst;
-
       cur_idx = (++cur_idx % num_concurrent);
     }
   }
@@ -249,7 +265,7 @@ class AdvNetworkingBenchRxOp : public Operator {
  private:
   // Holds burst buffers that cannot be freed yet
   static constexpr int fft_size_ = 16384;
-  static constexpr int num_concurrent = 4;  
+  static constexpr int num_concurrent = 4;
   std::array<std::shared_ptr<AdvNetBurstParams>, num_concurrent> burst_bufs_{nullptr};
   int     burst_buf_idx_ = 0;                // Index into burst_buf_idx_ of current burst
   int64_t ttl_bytes_recv_ = 0;               // Total bytes received in operator
@@ -262,8 +278,10 @@ class AdvNetworkingBenchRxOp : public Operator {
   void *full_batch_data_h_;                  // Host-pinned aggregated batch
   std::array<void *, num_concurrent>  full_batch_data_d_;                  // Device aggregated batch
   Parameter<bool> hds_;                      // Header-data split enabled
+  Parameter<bool> gpu_direct_;               // GPUDirect enabled
   Parameter<uint32_t> batch_size_;           // Batch size for one processing block
   Parameter<uint16_t> max_packet_size_;      // Maximum size of a single packet
+  Parameter<uint16_t> header_size_;          // Header size of packet
   NATS nats;
 
   std::array<cudaStream_t, num_concurrent> streams_;
