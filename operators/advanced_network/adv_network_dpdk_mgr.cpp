@@ -79,12 +79,63 @@ void DpdkMgr::SetConfigAndInitialize(const AdvNetConfigYaml &cfg) {
   }
 }
 
+std::optional<struct rte_pktmbuf_extmem> DpdkMgr::AllocateGpuPktMbuf(
+    int port_id,
+    uint16_t pkt_size,
+    int num_mbufs,
+    int gpu_dev) {
+  struct rte_pktmbuf_extmem ext_mem;
+  auto target_el_size = pkt_size + RTE_PKTMBUF_HEADROOM;
+  ext_mem.elt_size = ((target_el_size + 3) / 4) * 4;
+
+  struct rte_eth_dev_info dev_info;
+  int ret = rte_eth_dev_info_get(port_id, &dev_info);
+  if (ret != 0) {
+    HOLOSCAN_LOG_CRITICAL("Failed to get device info for port {}", port_id);
+    return std::nullopt;
+  }
+
+  ext_mem.buf_len = RTE_ALIGN_CEIL(static_cast<size_t>(num_mbufs) * static_cast<size_t>(ext_mem.elt_size), GPU_PAGE_SIZE);
+  HOLOSCAN_LOG_INFO("Allocated {} buffers elt_size={} totaling {} bytes of GPU memory for packets",
+        num_mbufs, ext_mem.elt_size, ext_mem.buf_len);
+  ext_mem.buf_iova = RTE_BAD_IOVA;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  ext_mem.buf_ptr = rte_gpu_mem_alloc(gpu_dev, ext_mem.buf_len, CPU_PAGE_SIZE);
+#pragma GCC diagnostic pop
+  if (ext_mem.buf_ptr == NULL) {
+    HOLOSCAN_LOG_CRITICAL("Could not allocate {:.2f}MB of GPU memory", ext_mem.buf_len/1e6);
+    return std::nullopt;
+  } else {
+    HOLOSCAN_LOG_INFO("Allocated {:.2f}MB on GPU", ext_mem.buf_len/1e6);
+  }
+
+  ret = rte_extmem_register(ext_mem.buf_ptr, ext_mem.buf_len, NULL, ext_mem.buf_iova,
+        GPU_PAGE_SIZE);
+  if (ret) {
+    HOLOSCAN_LOG_CRITICAL("Unable to register addr {}, ret {}", ext_mem.buf_ptr, ret);
+    return std::nullopt;
+  } else {
+    HOLOSCAN_LOG_INFO("Successfully registered external memory");
+  }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  ret = rte_dev_dma_map(dev_info.device, ext_mem.buf_ptr, ext_mem.buf_iova, ext_mem.buf_len);
+#pragma GCC diagnostic pop
+  if (ret) {
+    HOLOSCAN_LOG_CRITICAL("Could not DMA map EXT memory: {} err={}", ret, rte_errno);
+    return std::nullopt;
+  }  
+
+  return std::make_optional(ext_mem);
+}
+
 
 void DpdkMgr::Initialize() {
   int ret;
   uint16_t portid;
-
-  struct rte_pktmbuf_extmem ext_mem;
 
   static struct rte_eth_conf conf_eth_port = {
     .rxmode = {
@@ -165,11 +216,6 @@ void DpdkMgr::Initialize() {
   num_ports = ifs.size();
   HOLOSCAN_LOG_INFO("Attempting to use {} ports for high-speed network", num_ports);
 
-  // if (num_ports > 1) {
-  //   HOLOSCAN_LOG_CRITICAL("Only single NIC interface supported at this time!");
-  //   return;
-  // }
-
   strncpy(_argv[arg++], "adv_net_operator", max_arg_size - 1);
   strncpy(_argv[arg++], "-l", max_arg_size - 1);
   strncpy(_argv[arg++], cores.c_str(), max_arg_size - 1);
@@ -179,10 +225,12 @@ void DpdkMgr::Initialize() {
   for (const auto &name : ifs) {
     strncpy(_argv[arg++], "-a", max_arg_size - 1);
     strncpy(_argv[arg++], name.c_str(), max_arg_size - 1);
-    //  strncpy(_argv[arg++],
-    //  (name + std::string(",txq_inline_max=0,dv_flow_en=1")).c_str(), max_arg_size - 1);
+
+    strncpy(_argv[arg++],
+    (name + std::string(",txq_inline_max=0,dv_flow_en=1")).c_str(), max_arg_size - 1);
   }
 
+  // Add GPU PCIe devices
   for (const auto &gpu : gpu_bdfs) {
     strncpy(_argv[arg++], "-a", max_arg_size - 1);
     strncpy(_argv[arg++], gpu.c_str(), max_arg_size - 1);
@@ -252,9 +300,7 @@ void DpdkMgr::Initialize() {
       port_q_num[port].first = 1;
     } else if (queues.second == 0) {
       HOLOSCAN_LOG_INFO("Creating default queue for port {} transmit", port);
-      TxQueueConfig q = {.common_ = {"Default", 0, 0, false, 0, "0", 1518, 32767, 1, nullptr},
-                        .eth_dst_ = "", .ip_src_ = "", .ip_dst_ = "", .fill_type_ = "udp",
-                        .udp_src_port_ = 0, .udp_dst_port_ = 0};
+      TxQueueConfig q = {.common_ = {"Default", 0, 0, false, 0, "0", 1518, 32767, 1, nullptr}};
       AdvNetTxConfig txcfg;
       txcfg.if_name_ = port_id_to_name[port];
       txcfg.port_id_ = port;
@@ -266,7 +312,7 @@ void DpdkMgr::Initialize() {
   }
 
   // Queue setup
-  int max_batch_size = 0;
+  int max_rx_batch_size = 0;
   for (auto &rx : cfg_.rx_) {
     int max_pkt_size = 0;
     ret = rte_eth_dev_get_port_by_name(rx.if_name_.c_str(), &rx.port_id_);
@@ -283,51 +329,13 @@ void DpdkMgr::Initialize() {
       std::string append = "_P" + std::to_string(rx.port_id_) + "_Q" +
           std::to_string(q.common_.id_);
       auto rx_mbufs = q.common_.num_concurrent_batches_* q.common_.batch_size_;
-      max_batch_size = std::max(max_batch_size, q.common_.batch_size_);
+      max_rx_batch_size = std::max(max_rx_batch_size, q.common_.batch_size_);
       max_pkt_size   = std::max(max_pkt_size, q.common_.max_packet_size_);
 
       if (q.common_.gpu_direct_) {
-        auto target_el_size = (q.common_.max_packet_size_ - q.common_.hds_) + RTE_PKTMBUF_HEADROOM;
-        ext_mem.elt_size = ((target_el_size + 3) / 4) * 4;
-
-        struct rte_eth_dev_info dev_info;
-        ret = rte_eth_dev_info_get(rx.port_id_, &dev_info);
-        if (ret != 0) {
-          HOLOSCAN_LOG_CRITICAL("Failed to get device info for port {}", rx.port_id_);
-          return;
-        }
-
-        ext_mem.buf_len = RTE_ALIGN_CEIL(static_cast<size_t>(rx_mbufs) * static_cast<size_t>(ext_mem.elt_size), GPU_PAGE_SIZE);
-        HOLOSCAN_LOG_INFO("Allocated {} buffers elt_size={} totaling {} bytes of GPU memory for packets",
-              rx_mbufs, ext_mem.elt_size, ext_mem.buf_len);
-        ext_mem.buf_iova = RTE_BAD_IOVA;
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-        ext_mem.buf_ptr = rte_gpu_mem_alloc(q.common_.gpu_dev_, ext_mem.buf_len, CPU_PAGE_SIZE);
-  #pragma GCC diagnostic pop
-        if (ext_mem.buf_ptr == NULL) {
-          HOLOSCAN_LOG_CRITICAL("Could not allocate {:.2f}MB of GPU memory", ext_mem.buf_len/1e6);
-          return;
-        } else {
-          HOLOSCAN_LOG_INFO("Allocated {:.2f}MB on GPU", ext_mem.buf_len/1e6);
-        }
-
-        ret = rte_extmem_register(ext_mem.buf_ptr, ext_mem.buf_len, NULL, ext_mem.buf_iova,
-              GPU_PAGE_SIZE);
-        if (ret) {
-          HOLOSCAN_LOG_CRITICAL("Unable to register addr {}, ret {}", ext_mem.buf_ptr, ret);
-          return;
-        } else {
-          HOLOSCAN_LOG_INFO("Successfully registered external memory");
-        }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-        ret = rte_dev_dma_map(dev_info.device, ext_mem.buf_ptr, ext_mem.buf_iova, ext_mem.buf_len);
-  #pragma GCC diagnostic pop
-        if (ret) {
-          HOLOSCAN_LOG_CRITICAL("Could not DMA map EXT memory: {} err={}", ret, rte_errno);
+        auto ext_mem = AllocateGpuPktMbuf(rx.port_id_, q.common_.max_packet_size_ - q.common_.hds_, rx_mbufs, q.common_.gpu_dev_);
+        if (!ext_mem) {
+          HOLOSCAN_LOG_ERROR("Failed to allocate GPU packet pool");
           return;
         }
 
@@ -336,7 +344,7 @@ void DpdkMgr::Initialize() {
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
           q_backend->pools[0] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), rx_mbufs,
-              0, 0, ext_mem.elt_size, rte_socket_id(), &ext_mem, 1);
+              0, 0, ext_mem->elt_size, rte_socket_id(), std::addressof(*ext_mem), 1);
     #pragma GCC diagnostic pop
           if (q_backend->pools[0] == NULL) {
             HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
@@ -344,26 +352,26 @@ void DpdkMgr::Initialize() {
           }
 
           HOLOSCAN_LOG_INFO("Created GPU mempool for GPUDirect: {} mbufs={} elsize={} ptr={}",
-              gpu_name, rx_mbufs, ext_mem.elt_size, (void*)q_backend->pools[0]);
+              gpu_name, rx_mbufs, ext_mem->elt_size, (void*)q_backend->pools[0]);
         }
         else {
           HOLOSCAN_LOG_INFO(
               "Enabling header-data split on RX with split point of {} and GPU payload size {}",
-                q.common_.hds_, ext_mem.elt_size);
+                q.common_.hds_, ext_mem->elt_size);
 
           std::string gpu_name = std::string("RX_GPU_POOL") + append;
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
           q_backend->pools[1] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), rx_mbufs,
-              0, 0, ext_mem.elt_size, rte_socket_id(), &ext_mem, 1);
+              0, 0, ext_mem->elt_size, rte_socket_id(), std::addressof(*ext_mem), 1);
     #pragma GCC diagnostic pop
           if (q_backend->pools[1] == NULL) {
             HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
             return;
           }
 
-          HOLOSCAN_LOG_INFO("Created GPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
-              gpu_name, rx_mbufs, ext_mem.elt_size, (void*)q_backend->pools[1]);
+          HOLOSCAN_LOG_INFO("Created GPU mempool for RX HDS: {} mbufs={} elsize={} ptr={}",
+              gpu_name, rx_mbufs, ext_mem->elt_size, (void*)q_backend->pools[1]);
 
           auto cpu_name = std::string("RX_CPU_POOL") + append;
           q_backend->pools[0] = rte_pktmbuf_pool_create(cpu_name.c_str(),
@@ -375,8 +383,15 @@ void DpdkMgr::Initialize() {
             return;
           }
 
-          HOLOSCAN_LOG_INFO("Created CPU mempool for HDS: {} mbufs={} elsize={} ptr={}",
+          HOLOSCAN_LOG_INFO("Created CPU mempool for RX HDS: {} mbufs={} elsize={} ptr={}",
             cpu_name, rx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM, (void*)q_backend->pools[0]);
+
+          struct rte_eth_dev_info dev_info;
+          int ret = rte_eth_dev_info_get(rx.port_id_, &dev_info);
+          if (ret != 0) {
+            HOLOSCAN_LOG_CRITICAL("Failed to get device info for port {}", rx.port_id_);
+            return;
+          }
 
           memcpy(&q_backend->rxconf_qsplit, &dev_info.default_rxconf,
               sizeof(q_backend->rxconf_qsplit));
@@ -424,51 +439,9 @@ void DpdkMgr::Initialize() {
     local_port_conf[rx.port_id_].rxmode.max_lro_pkt_size = max_pkt_size - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up RX ring");
-  rx_ring = rte_ring_create("RX_RING", 2048, rte_socket_id(),
-      RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
-  if (rx_ring == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
-    return;
-  }
-
-  auto num_rx_ptrs_bufs = (1UL << 12) - 1;
-  HOLOSCAN_LOG_INFO("Setting up RX burst pool with {} batches",  num_rx_ptrs_bufs);
-  rx_burst_buffer = rte_mempool_create("RX_BURST_POOL",
-                    num_rx_ptrs_bufs,
-                    sizeof(void *) * max_batch_size * 2,  // 2 If HDR is enabled
-                    0,
-                    0,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    rte_socket_id(),
-                    0);
-  if (rx_burst_buffer == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate RX burst pool!");
-    return;
-  }
-
-  HOLOSCAN_LOG_INFO("Setting up RX meta pool");
-  rx_meta = rte_mempool_create("RX_META_POOL",
-                    (1U << 6) - 1U,
-                    sizeof(AdvNetBurstParams),
-                    0,
-                    0,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    rte_socket_id(),
-                    0);
-  if (rx_meta == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate RX meta pool!");
-    return;
-  }
 
   // For now make a single queue. Support more sophisticated TX on next release
-  max_batch_size = 0;
+  int max_tx_batch_size = 0;
   for (auto &tx : cfg_.tx_) {
     ret = rte_eth_dev_get_port_by_name(tx.if_name_.c_str(), &tx.port_id_);
     if (ret < 0) {
@@ -479,80 +452,93 @@ void DpdkMgr::Initialize() {
     HOLOSCAN_LOG_INFO("Using port {} for TX", tx.port_id_);
 
     for (auto &q : tx.queues_) {
-      if (q.common_.gpu_direct_ && q.common_.hds_ > 0) {
-        HOLOSCAN_LOG_CRITICAL("Header data split not supported on TX yet");
-        return;
-      }
-
+      max_tx_batch_size = std::max(max_tx_batch_size, q.common_.batch_size_);
       q.common_.backend_config_ = new DPDKQueueConfig;
       auto q_backend = static_cast<DPDKQueueConfig *>(q.common_.backend_config_);
-
-      max_batch_size = std::max(max_batch_size, q.common_.batch_size_);
+      std::string append = "_P" + std::to_string(tx.port_id_) + "_Q" +
+          std::to_string(q.common_.id_);      
       auto tx_mbufs = q.common_.num_concurrent_batches_* q.common_.batch_size_;
-      auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM;
-      std::string pool_name = std::string("TX_POOL") + "_P" + std::to_string(tx.port_id_) + "_Q" +
-          std::to_string(q.common_.id_);
-      q_backend->pools[0] = rte_pktmbuf_pool_create(pool_name.c_str(),
-          tx_mbufs, MEMPOOL_CACHE_SIZE, 0, pkt_size, rte_socket_id());
-      if (q_backend->pools[0] == NULL) {
-        HOLOSCAN_LOG_CRITICAL("Cannot init TX mbuf pool: {} ({})", rte_errno, rte_strerror(rte_errno));
-        return;
-      }
 
-      HOLOSCAN_LOG_INFO("Created TX pool with packet size {} bytes and {} mbufs at {}",
-            pkt_size, tx_mbufs, (void*)q_backend->pools[0]);
+      if (q.common_.gpu_direct_) {
+        auto ext_mem = AllocateGpuPktMbuf(tx.port_id_, q.common_.max_packet_size_ - q.common_.hds_, tx_mbufs, q.common_.gpu_dev_);
+        if (!ext_mem) {
+          HOLOSCAN_LOG_ERROR("Failed to allocate GPU packet pool");
+          return;
+        }
+
+        if (q.common_.hds_ == 0) {
+          std::string gpu_name = std::string("TX_GPU_POOL") + append;
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+          q_backend->pools[0] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), tx_mbufs,
+              0, 0, ext_mem->elt_size, rte_socket_id(), std::addressof(*ext_mem), 1);
+    #pragma GCC diagnostic pop
+          if (q_backend->pools[0] == NULL) {
+            HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
+            return;
+          }
+
+          HOLOSCAN_LOG_INFO("Created GPU mempool for GPUDirect: {} mbufs={} elsize={} ptr={}",
+              gpu_name, tx_mbufs, ext_mem->elt_size, (void*)q_backend->pools[0]);
+        }
+        else {
+          HOLOSCAN_LOG_INFO(
+              "Enabling header-data split on TX with split point of {} and GPU payload size {}",
+                q.common_.hds_, ext_mem->elt_size);
+
+          std::string gpu_name = std::string("TX_GPU_POOL") + append;
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+          q_backend->pools[1] = rte_pktmbuf_pool_create_extbuf(gpu_name.c_str(), tx_mbufs,
+              0, 0, ext_mem->elt_size, rte_socket_id(), std::addressof(*ext_mem), 1);
+    #pragma GCC diagnostic pop
+          if (q_backend->pools[1] == NULL) {
+            HOLOSCAN_LOG_CRITICAL("Could not create EXT memory mempool");
+            return;
+          }
+
+          HOLOSCAN_LOG_INFO("Created GPU mempool for TX HDS: {} mbufs={} elsize={} ptr={}",
+              gpu_name, tx_mbufs, ext_mem->elt_size, (void*)q_backend->pools[1]);
+
+          auto cpu_name = std::string("TX_CPU_POOL") + append;
+          q_backend->pools[0] = rte_pktmbuf_pool_create(cpu_name.c_str(),
+              tx_mbufs,  MEMPOOL_CACHE_SIZE, 0, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
+                  rte_socket_id());
+          if (!q_backend->pools[0]) {
+            HOLOSCAN_LOG_CRITICAL("Could not create sysmem mempool {} buffer split: {}",
+                cpu_name, rte_errno);
+            return;
+          }
+
+          HOLOSCAN_LOG_INFO("Created CPU mempool for TX HDS: {} mbufs={} elsize={} ptrs={}/{}",
+            cpu_name, tx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM, (void*)q_backend->pools[0], (void*)q_backend->pools[1]);
+        }
+      } else {
+        auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM;
+        std::string pool_name = std::string("TX_CPU_POOL") + append;
+        q_backend->pools[0] = rte_pktmbuf_pool_create(pool_name.c_str(),
+            tx_mbufs, MEMPOOL_CACHE_SIZE, 0, pkt_size, rte_socket_id());
+        if (q_backend->pools[0] == NULL) {
+          HOLOSCAN_LOG_CRITICAL("Cannot init TX mbuf pool: {} ({})", rte_errno, rte_strerror(rte_errno));
+          return;
+        }
+
+        HOLOSCAN_LOG_INFO("Created CPU TX pool with packet size {} bytes and {} mbufs at {}",
+              pkt_size, tx_mbufs, (void*)q_backend->pools[0]);
+      }
     }
 
     local_port_conf[tx.port_id_].txmode.mq_mode  =  RTE_ETH_MQ_TX_NONE;
     local_port_conf[tx.port_id_].txmode.offloads =  RTE_ETH_TX_OFFLOAD_IPV4_CKSUM  |
                                                     RTE_ETH_TX_OFFLOAD_UDP_CKSUM   |
-                                                    RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
-    // Add multi-seg offload when TX GPUDirect is supported
+                                                    RTE_ETH_TX_OFFLOAD_TCP_CKSUM   |
+                                                    RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up TX ring");
-  tx_ring = rte_ring_create("TX_RING", 2048, rte_socket_id(),
-        RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
-  if (tx_ring == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
+  if (SetupPoolsAndRings(max_rx_batch_size, max_tx_batch_size) < 0) {
+    HOLOSCAN_LOG_ERROR("Failed to set up pools and rings!");
     return;
   }
-
-  HOLOSCAN_LOG_INFO("Setting up TX meta pool");
-  tx_meta = rte_mempool_create("TX_META_POOL",
-                    (1U << 6) - 1U,
-                    sizeof(AdvNetBurstParams),
-                    0,
-                    0,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    rte_socket_id(),
-                    0);
-  if (tx_meta == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate TX meta pool!");
-    return;
-  }
-
-
-  tx_burst_buffer = rte_mempool_create("TX_BURST_POOL",
-                    (1U << 5) - 1U,
-                    sizeof(void *) * max_batch_size * 2,
-                    0,
-                    0,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    rte_socket_id(),
-                    0);
-  if (tx_burst_buffer == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate TX message pool!");
-    return;
-  }
-
-  HOLOSCAN_LOG_INFO("Setting up TX burst pool with {} pointers at {}", max_batch_size, (void*)tx_burst_buffer);
 
   for (const auto &[port, queues] : port_q_num) {
     HOLOSCAN_LOG_INFO("Initializing port {} with {} RX queues and {} TX queues...",
@@ -686,6 +672,96 @@ void DpdkMgr::Initialize() {
   }
 
   initialized = true;
+}
+
+int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
+
+  HOLOSCAN_LOG_INFO("Setting up RX ring");
+  rx_ring = rte_ring_create("RX_RING", 2048, rte_socket_id(),
+      RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
+  if (rx_ring == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
+    return -1;
+  }
+
+  auto num_rx_ptrs_bufs = (1UL << 13) - 1;
+  HOLOSCAN_LOG_INFO("Setting up RX burst pool with {} batches",  num_rx_ptrs_bufs);
+  rx_burst_buffer = rte_mempool_create("RX_BURST_POOL",
+                    num_rx_ptrs_bufs,
+                    sizeof(void *) * max_rx_batch,
+                    0,
+                    0,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    rte_socket_id(),
+                    0);
+  if (rx_burst_buffer == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate RX burst pool!");
+    return -1;
+  }
+
+  HOLOSCAN_LOG_INFO("Setting up RX meta pool");
+  rx_meta = rte_mempool_create("RX_META_POOL",
+                    (1U << 6) - 1U,
+                    sizeof(AdvNetBurstParams),
+                    0,
+                    0,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    rte_socket_id(),
+                    0);
+  if (rx_meta == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate RX meta pool!");
+    return -1;
+  }
+
+  HOLOSCAN_LOG_INFO("Setting up TX ring");
+  tx_ring = rte_ring_create("TX_RING", 2048, rte_socket_id(),
+        RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
+  if (tx_ring == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
+    return -1;
+  }
+
+  HOLOSCAN_LOG_INFO("Setting up TX meta pool");
+  tx_meta = rte_mempool_create("TX_META_POOL",
+                    (1U << 6) - 1U,
+                    sizeof(AdvNetBurstParams),
+                    0,
+                    0,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    rte_socket_id(),
+                    0);
+  if (tx_meta == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate TX meta pool!");
+    return -1;
+  }
+
+  HOLOSCAN_LOG_INFO("Setting up TX burst pool with {} pointers", max_tx_batch);
+  tx_burst_buffer = rte_mempool_create("TX_BURST_POOL",
+                    (1U << 6) - 1U,
+                    sizeof(void *) * max_tx_batch,
+                    0,
+                    0,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    rte_socket_id(),
+                    0);
+  if (tx_burst_buffer == nullptr) {
+    HOLOSCAN_LOG_CRITICAL("Failed to allocate TX message pool!");
+    return -1;
+  }
+
+  return 0;
 }
 
 #define MAX_PATTERN_NUM    4
@@ -999,13 +1075,7 @@ int DpdkMgr::rx_core(void *arg) {
         }
         continue;
       }
-      else {
-        if (burst->gpu_pkts == nullptr) {
-          printf("uh oh\n");
-        }
-      }
     } else {
-      printf("setting null\n");
       burst->gpu_pkts = nullptr;
     }
 
@@ -1028,10 +1098,6 @@ int DpdkMgr::rx_core(void *arg) {
       nb_rx = 0;
     } else {
       burst->hdr.hdr.num_pkts = 0;
-    }
-
-    if (burst->gpu_pkts == nullptr) {
-      printf("bad\n");
     }
 
     // DPDK on some ARM platforms requires that you always pass nb_pkts as a number divisible
@@ -1086,14 +1152,26 @@ int DpdkMgr::tx_core(void *arg) {
   uint64_t pkts_tx = 0;
   AdvNetBurstParams *msg;
   int64_t bursts = 0;
-   timeval t1, t2, t3;
-   //gettimeofday(&t1, NULL);
+
   HOLOSCAN_LOG_INFO("Starting TX Core {}, port {}, queue {} socket {}", rte_lcore_id(),
         tparams->port, tparams->queue, rte_socket_id());
 
   while (!force_quit.load()) {
     if (rte_ring_dequeue(tparams->ring, reinterpret_cast<void**>(&msg)) != 0) {
       continue;
+    }
+
+    // Header-data split needs to chain all the buffers
+    if (msg->cpu_pkts != nullptr && msg->gpu_pkts != nullptr) {
+      for (size_t p = 0; p < msg->hdr.hdr.num_pkts; p++) {
+        auto *cpu_mbuf = reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[p]);
+        auto *gpu_mbuf = reinterpret_cast<rte_mbuf*>(msg->gpu_pkts[p]);
+
+        cpu_mbuf->next = gpu_mbuf;
+        gpu_mbuf->next = nullptr;
+
+        cpu_mbuf->nb_segs = 2;
+      }
     }
 
     HOLOSCAN_LOG_DEBUG("Got burst in TX");
@@ -1111,31 +1189,33 @@ int DpdkMgr::tx_core(void *arg) {
 
     auto pkts_to_transmit = static_cast<int64_t>(msg->hdr.hdr.num_pkts);
 
-    //gettimeofday(&t2, NULL);
-
     size_t pkts_tx = 0;
     while (pkts_tx != msg->hdr.hdr.num_pkts && !force_quit.load()) {
-       //if (pkts_tx == 0) {
-      //   auto *pkt  = rte_pktmbuf_mtod((struct rte_mbuf*)msg->cpu_pkts[0], uint8_t*);
-      //   for (int i = 0; i < ((struct rte_mbuf*)msg->cpu_pkts[0])->data_len; i++) {
-      //     printf("%02x ", pkt[i]);
-      //   }
-      //   printf("\n");
-
       auto to_send = static_cast<uint16_t>(
             std::min(static_cast<size_t>(DEFAULT_NUM_TX_BURST), msg->hdr.hdr.num_pkts - pkts_tx));
 
-      int tx = rte_eth_tx_burst(tparams->port,
-            tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->cpu_pkts[pkts_tx]), to_send);
+      // CPU-only or HDS mode
+      int tx;
+      if (msg->cpu_pkts != nullptr) {
+        tx = rte_eth_tx_burst(tparams->port,
+              tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->cpu_pkts[pkts_tx]), to_send);
+      }
+      else {
+        tx = rte_eth_tx_burst(tparams->port,
+              tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->gpu_pkts[pkts_tx]), to_send);
+      }
 
       pkts_tx += tx;
     }
-    //     gettimeofday(&t1, NULL);
 
-    //     timersub(&t1, &t2, &t3);
-    // printf("%ld\n", t3.tv_usec);
+    if (msg->cpu_pkts) {
+      rte_mempool_put(tparams->burst_pool, static_cast<void*>(msg->cpu_pkts));
+    }
 
-    rte_mempool_put(tparams->burst_pool, static_cast<void*>(msg->cpu_pkts));
+    if (msg->gpu_pkts) {
+      rte_mempool_put(tparams->burst_pool, static_cast<void*>(msg->gpu_pkts));
+    }
+
     rte_mempool_put(tparams->meta_pool, msg);
 
     HOLOSCAN_LOG_DEBUG("Sent {} packets\n", pkts_tx);

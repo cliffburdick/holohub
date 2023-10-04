@@ -37,9 +37,9 @@ fig.subplots_adjust(right=0.75)
 axfreq = fig.add_axes([0.85, 0.15, 0.0225, 0.70])
 freq_slider = Slider(
     ax=axfreq,
-    label='Frequency [kHz]',
+    label='Frequency [MHz]',
     valmin=0,
-    valmax=10e3,
+    valmax=200,
     valinit=0,
     orientation="vertical"
 )
@@ -76,7 +76,7 @@ def animate(i):
     line_data = y
     line.set_ydata(line_data)
 
-    print("Update")
+    #print("Update")
   except Empty:
     pass
 

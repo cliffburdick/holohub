@@ -61,7 +61,7 @@ def update_psd(n):
         psd_fig.data[0]['x'] = xlab
         psd_fig.data[0]['y'] = x
         psd_fig.layout['uirevision'] = 'f'
-        print("Updating figure")
+        #print("Updating figure")
         return psd_fig
                  
     except Empty as e:
