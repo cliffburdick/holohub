@@ -107,17 +107,17 @@ void AdvNetworkOpTx::compute(InputContext& op_input, [[maybe_unused]] OutputCont
   }
 
   AdvNetBurstParams *d_params;
-  AdvNetBurstParams *burst;
   for (int i = 1; i <=2; i++) {
-    if (rte_mempool_get(impl->tx_meta_pool, reinterpret_cast<void**>(&d_params)) != 0) {
-      HOLOSCAN_LOG_CRITICAL("Failed to get TX meta descriptor");
-      return;
-    }
     auto n = "burst_in" + std::to_string(i);
-
     auto rx = op_input.receive<AdvNetBurstParams *>(n.c_str());
+
     if (rx.has_value() && rx.value() != nullptr) {
-      burst = rx.value();
+      if (rte_mempool_get(impl->tx_meta_pool, reinterpret_cast<void**>(&d_params)) != 0) {
+        HOLOSCAN_LOG_CRITICAL("Failed to get TX meta descriptor");
+        return;
+      }
+
+      AdvNetBurstParams *burst = rx.value();
       rte_memcpy(static_cast<void*>(d_params), burst, sizeof(*burst));
       struct rte_ring *ring = static_cast<struct rte_ring *>(tx_rings_[(burst->hdr.hdr.port_id << 16) | burst->hdr.hdr.q_id]);
       //printf("TXOP %d %p %p ring %p msg %p\n", burst->hdr.hdr.port_id, burst->cpu_pkts, burst->gpu_pkts, ring, d_params);

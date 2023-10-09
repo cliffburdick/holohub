@@ -19,6 +19,7 @@
 #include "adv_network_tx.h"
 #include "adv_network_kernels.h"
 #include "holoscan/holoscan.hpp"
+#include <queue>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
@@ -64,10 +65,15 @@ class AdvNetworkingBenchTxOp : public Operator {
     ip_src_ = ntohl(ip_src_);
     ip_dst_ = ntohl(ip_dst_);
 
-    // Temporary buffer for copying pointers to
-    if (hds_.get() > 0) {
-      cudaMallocHost(&gpu_bufs, sizeof(uint8_t**) * batch_size_.get());
+    for (int n = 0; n < num_concurrent; n++) {
+      if (hds_.get() > 0) {
+        cudaMallocHost(&gpu_bufs[n], sizeof(uint8_t**) * batch_size_.get());
+      }
+
+      cudaStreamCreate(&streams_[n]);
+      cudaEventCreate(&events_[n]);
     }
+
 
     HOLOSCAN_LOG_INFO("AdvNetworkingBenchTxOp::initialize() complete");
   }
@@ -104,6 +110,14 @@ class AdvNetworkingBenchTxOp : public Operator {
      * expect the transmit operator to operate much faster than the receiver since it's not having to do any work
      * to construct packets, and just copying from a buffer into memory.
     */
+  //  if ( port_id_.get() == 0) {
+  //   return;
+  //  }
+//printf("here\n");
+   if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
+    HOLOSCAN_LOG_ERROR("Falling behind on TX processing!");
+    return;
+   }
     auto msg = adv_net_create_burst_params();
     adv_net_set_hdr(msg, port_id_.get(), queue_id, batch_size_.get());
 
@@ -155,7 +169,7 @@ class AdvNetworkingBenchTxOp : public Operator {
           cpu_len = hds_.get();
           gpu_len = payload_size_.get();
 
-          gpu_bufs[num_pkt] = reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
+          gpu_bufs[cur_idx][num_pkt] = reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
         } else {
           cpu_len = payload_size_.get() + 42;  // sizeof UDP header
           gpu_len = 0;
@@ -172,20 +186,38 @@ class AdvNetworkingBenchTxOp : public Operator {
 
     // Populate packets with 16-bit numbers of {0,0}, {1,1}, ...
     if (hds_.get() > 0) {
-      populate_packets(gpu_bufs, payload_size_.get(), adv_net_get_num_pkts(msg), 0);
+      populate_packets(gpu_bufs[cur_idx], payload_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
+      cudaEventRecord(events_[cur_idx], streams_[cur_idx]);
+      out_q.push(TxMsg{msg, events_[cur_idx]});
     }
 
-    op_output.emit(msg, "burst_out");
+    cur_idx = (++cur_idx % num_concurrent);
+
+    const auto first = out_q.front();
+    if (cudaEventQuery(first.evt) == cudaSuccess) {
+      op_output.emit(first.msg, "burst_out");
+      out_q.pop();
+    }
   };
 
  private:
+  struct TxMsg {
+    AdvNetBurstParams *msg;
+    cudaEvent_t evt;
+  };
+
+  static constexpr int num_concurrent = 4;
+  std::queue<TxMsg> out_q;
+  std::array<cudaStream_t, num_concurrent> streams_;
+  std::array<cudaEvent_t, num_concurrent> events_;
   void *full_batch_data_h_;
   static constexpr uint16_t queue_id = 0;
   char eth_dst_[6];
-  uint8_t **gpu_bufs;
+  std::array<uint8_t **, num_concurrent> gpu_bufs;
   uint32_t ip_src_;
   uint32_t ip_dst_;
   cudaStream_t stream;
+  int cur_idx = 0;
   Parameter<int> hds_;                       // Header-data split point
   Parameter<bool> gpu_direct_;               // GPUDirect enabled
   Parameter<uint32_t> batch_size_;
@@ -310,14 +342,21 @@ class AdvNetworkingBenchRxOp : public Operator {
       aggr_pkts_recv_ = 0;
 
       if (gpu_direct_.get()) {
-        if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
+        while (out_q.size() > 0) {
+          const auto first = out_q.front();
+          if (cudaEventQuery(first.evt) == cudaSuccess) {
+            adv_net_free_all_burst_pkts_and_burst(first.msg);
+            out_q.pop();
+          }
+          else {
+            break;
+          }
+        }
+
+        if (out_q.size() == num_concurrent) {
           HOLOSCAN_LOG_ERROR("Fell behind in processing on GPU!");
           adv_net_free_all_burst_pkts_and_burst(burst);
           return;
-        } else {
-          if (burst_bufs_[cur_idx] != nullptr) {
-            adv_net_free_all_burst_pkts_and_burst(burst_bufs_[cur_idx]);
-          }
         }
 
         simple_packet_reorder(static_cast<uint8_t*>(full_batch_data_d_[cur_idx]),
@@ -326,6 +365,7 @@ class AdvNetworkingBenchRxOp : public Operator {
                       batch_size_.get(),
                       streams_[cur_idx]);
         cudaEventRecord(events_[cur_idx], streams_[cur_idx]);
+        out_q.push(RxMsg{burst, events_[cur_idx]});
 
         if (cudaGetLastError() != cudaSuccess)  {
           HOLOSCAN_LOG_ERROR("CUDA error with {} packets in batch and {} bytes total",
@@ -344,7 +384,13 @@ class AdvNetworkingBenchRxOp : public Operator {
 
  private:
   // Holds burst buffers that cannot be freed yet
+  struct RxMsg {
+    std::shared_ptr<AdvNetBurstParams> msg;
+    cudaEvent_t evt;
+  };
+
   static constexpr int num_concurrent = 4;
+  std::queue<RxMsg> out_q;
   std::array<std::shared_ptr<AdvNetBurstParams>, num_concurrent> burst_bufs_{nullptr};
   int     burst_buf_idx_ = 0;                // Index into burst_buf_idx_ of current burst
   int64_t ttl_bytes_recv_ = 0;               // Total bytes received in operator

@@ -59,8 +59,14 @@ int AdvNetworkOpRx::Init() {
   impl->rx_ring = nullptr;
 
   for (const auto &rx: impl->cfg.rx_) {
+    auto port_opt = adv_net_get_port_from_ifname(rx.if_name_);
+    if (!port_opt.has_value()) {
+      HOLOSCAN_LOG_ERROR("Failed to get port from name {}", rx.if_name_);
+      return -1;
+    }
+
     for (const auto &q: rx.queues_) {
-      pq_map_[(rx.port_id_ << 16) | q.common_.id_] = q.output_port_;
+      pq_map_[(port_opt.value() << 16) | q.common_.id_] = q.output_port_;
     }
   }
 

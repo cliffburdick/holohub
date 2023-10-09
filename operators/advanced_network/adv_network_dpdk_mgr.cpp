@@ -875,7 +875,7 @@ int DpdkMgr::GetRxPkts(void **pkts, int num) {
 void PrintDpdkStats() {
     struct rte_eth_stats eth_stats;
     int len, ret, i;
-    RTE_ETH_FOREACH_DEV(i) {
+    for (i = 0; i < 2; i++) {
       rte_eth_stats_get(i, &eth_stats);
       printf("\n\nPort %u:\n", i);
 
@@ -1075,6 +1075,7 @@ int DpdkMgr::rx_core(void *arg) {
 
     //  Queue ID for receiver to differentiate
     burst->hdr.hdr.q_id = tparams->queue;
+    burst->hdr.hdr.port_id = tparams->port;
 
     if (!tparams->gpu_direct || tparams->hds) {
       if (rte_mempool_get(tparams->burst_pool, reinterpret_cast<void **>(&burst->cpu_pkts)) < 0) {
