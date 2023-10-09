@@ -726,12 +726,40 @@ int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
     return -1;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up TX ring");
-  tx_ring = rte_ring_create("TX_RING", 2048, rte_socket_id(),
-        RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
-  if (tx_ring == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
-    return -1;
+  for (const auto &tx : cfg_.tx_) {
+    for (const auto &q : tx.queues_) {
+      const auto append = "P" + std::to_string(tx.port_id_) + "_Q" + std::to_string(q.common_.id_);
+
+      auto name = "TX_RING_" + append;
+      HOLOSCAN_LOG_INFO("Setting up TX ring {}", name);
+      uint32_t key = (tx.port_id_ << 16) | q.common_.id_;
+      tx_rings[key] = rte_ring_create(name.c_str(), 2048, rte_socket_id(),
+            RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
+      if (tx_rings[key] == nullptr) {
+        HOLOSCAN_LOG_CRITICAL("Failed to allocate ring!");
+        return -1;
+      }
+
+      name = "TX_BURST_POOL_" + append;
+      tx_burst_buffers[key] = rte_mempool_create(name.c_str(),
+                        (1U << 6) - 1U,
+                        sizeof(void *) * max_tx_batch,
+                        0,
+                        0,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        rte_socket_id(),
+                        0);
+      if (tx_burst_buffers[key] == nullptr) {
+        HOLOSCAN_LOG_CRITICAL("Failed to allocate TX message pool!");
+        return -1;
+      }
+
+      HOLOSCAN_LOG_INFO("Setting up TX burst pool {} with {} pointers at {}", 
+            name, max_tx_batch, (void*)tx_burst_buffers[key]);
+    }
   }
 
   HOLOSCAN_LOG_INFO("Setting up TX meta pool");
@@ -751,22 +779,6 @@ int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
     return -1;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up TX burst pool with {} pointers", max_tx_batch);
-  tx_burst_buffer = rte_mempool_create("TX_BURST_POOL",
-                    (1U << 6) - 1U,
-                    sizeof(void *) * max_tx_batch,
-                    0,
-                    0,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    rte_socket_id(),
-                    0);
-  if (tx_burst_buffer == nullptr) {
-    HOLOSCAN_LOG_CRITICAL("Failed to allocate TX message pool!");
-    return -1;
-  }
 
   return 0;
 }
@@ -971,13 +983,14 @@ void DpdkMgr::Run() {
       continue;
     }
     for (auto &q : tx.queues_) {
+      uint32_t key = (tx.port_id_ << 16) | q.common_.id_;
       auto qinfo = static_cast<DPDKQueueConfig *>(q.common_.backend_config_);
       auto params = new TxWorkerParams;
       //  params->hds    = q.common_.hds_ > 0;
       params->port   = tx.port_id_;
-      params->ring   = tx_ring;
+      params->ring   = tx_rings[key];
       params->queue  = q.common_.id_;
-      params->burst_pool  = tx_burst_buffer;
+      params->burst_pool  = tx_burst_buffers[key];
       params->meta_pool   = tx_meta;
       params->batch_size  = q.common_.batch_size_;
       rte_eth_macaddr_get(tx.port_id_, &params->mac_addr);
@@ -1019,14 +1032,14 @@ void DpdkMgr::flush_packets(int port) {
 
 void DpdkMgr::check_pkts_to_free(rte_ring *msg_ring,
     rte_mempool *burst_pool, rte_mempool *meta_pool) {
-    AdvNetBurstParams *msg;
-    if (rte_ring_dequeue(msg_ring, reinterpret_cast<void**>(&msg)) == 0) {
-      for (int p = 0; p < msg->hdr.hdr.num_pkts; p++) {
-        rte_pktmbuf_free_seg(reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[p]));
-      }
-      rte_mempool_put(burst_pool, msg->cpu_pkts);
-      rte_mempool_put(meta_pool, msg);
-    }
+    // AdvNetBurstParams *msg;
+    // if (rte_ring_dequeue(msg_ring, reinterpret_cast<void**>(&msg)) == 0) {
+    //   for (int p = 0; p < msg->hdr.hdr.num_pkts; p++) {
+    //     rte_pktmbuf_free_seg(reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[p]));
+    //   }
+    //   rte_mempool_put(burst_pool, msg->cpu_pkts);
+    //   rte_mempool_put(meta_pool, msg);
+    // }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1156,8 +1169,8 @@ int DpdkMgr::tx_core(void *arg) {
   AdvNetBurstParams *msg;
   int64_t bursts = 0;
 
-  HOLOSCAN_LOG_INFO("Starting TX Core {}, port {}, queue {} socket {}", rte_lcore_id(),
-        tparams->port, tparams->queue, rte_socket_id());
+  HOLOSCAN_LOG_INFO("Starting TX Core {}, port {}, queue {} socket {} using burst pool {} ring {}", rte_lcore_id(),
+        tparams->port, tparams->queue, rte_socket_id(), (void*)tparams->burst_pool, (void*)tparams->ring);
 
   while (!force_quit.load()) {
     if (rte_ring_dequeue(tparams->ring, reinterpret_cast<void**>(&msg)) != 0) {
@@ -1191,6 +1204,8 @@ int DpdkMgr::tx_core(void *arg) {
     auto pkts_to_transmit = static_cast<int64_t>(msg->hdr.hdr.num_pkts);
 
     size_t pkts_tx = 0;
+    // HOLOSCAN_LOG_INFO("{} msg {} Sending {} packets to pool {} {} port {} {} pools {} {} ring {}\n", rte_lcore_id(), (void*)msg, pkts_tx, (void*)reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx])->pool,
+    //   (void*)reinterpret_cast<rte_mbuf*>(msg->gpu_pkts[pkts_tx])->pool, tparams->port, msg->hdr.hdr.port_id, (void*)msg->cpu_pkts, (void*)msg->gpu_pkts, (void*)tparams->ring);
     while (pkts_tx != msg->hdr.hdr.num_pkts && !force_quit.load()) {
       auto to_send = static_cast<uint16_t>(
             std::min(static_cast<size_t>(DEFAULT_NUM_TX_BURST), msg->hdr.hdr.num_pkts - pkts_tx));

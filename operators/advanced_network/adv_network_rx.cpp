@@ -31,7 +31,8 @@ struct AdvNetworkOpRx::AdvNetworkOpRxImpl {
 
 
 void AdvNetworkOpRx::setup(OperatorSpec& spec) {
-  spec.output<std::shared_ptr<AdvNetBurstParams>>("burst_out");
+  spec.output<std::shared_ptr<AdvNetBurstParams>>("bench_rx_out");
+  spec.output<std::shared_ptr<AdvNetBurstParams>>("bench_rx_out2");
 
   spec.param(
       cfg_,
@@ -56,6 +57,12 @@ int AdvNetworkOpRx::Init() {
   impl->dpdk_mgr->SetConfigAndInitialize(impl->cfg);
   impl->rx_desc_pool = nullptr;
   impl->rx_ring = nullptr;
+
+  for (const auto &rx: impl->cfg.rx_) {
+    for (const auto &q: rx.queues_) {
+      pq_map_[(rx.port_id_ << 16) | q.common_.id_] = q.output_port_;
+    }
+  }
 
   return 0;
 }
@@ -87,7 +94,8 @@ void AdvNetworkOpRx::compute([[maybe_unused]] InputContext&, OutputContext& op_o
   memcpy(adv_burst.get(), burst, sizeof(*burst));
   rte_mempool_put(impl->rx_meta_pool, burst);
 
-  op_output.emit(adv_burst, "burst_out");
+  const auto port_str = pq_map_[(adv_burst->hdr.hdr.port_id << 16) | adv_burst->hdr.hdr.q_id];
+  op_output.emit(adv_burst, port_str.c_str());
 }
 
 };  // namespace holoscan::ops

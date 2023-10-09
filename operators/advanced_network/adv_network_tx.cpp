@@ -39,7 +39,8 @@ struct UDPPkt {
 } __attribute__((packed));
 
 void AdvNetworkOpTx::setup(OperatorSpec& spec)  {
-  spec.input<AdvNetBurstParams *>("burst_in");
+  spec.input<AdvNetBurstParams *>("burst_in1");
+  spec.input<AdvNetBurstParams *>("burst_in2");
 
   spec.param(
       cfg_,
@@ -54,7 +55,9 @@ void AdvNetworkOpTx::initialize() {
   register_converter<holoscan::ops::AdvNetConfigYaml>();
 
   holoscan::Operator::initialize();
-  Init();
+  if (Init() < 0) {
+    HOLOSCAN_LOG_ERROR("Failed to initialize ANO TX");
+  }
 }
 
 int AdvNetworkOpTx::Init() {
@@ -80,30 +83,53 @@ void AdvNetworkOpTx::compute(InputContext& op_input, [[maybe_unused]] OutputCont
       [[maybe_unused]] ExecutionContext&) {
   int n;
 
-  if (unlikely(impl->tx_ring == nullptr)) {
-    impl->tx_ring = rte_ring_lookup("TX_RING");
-  }
+  if (!unlikely(init)) {
+    for (const auto &tx: impl->cfg.tx_) {
+      auto port_opt = adv_net_get_port_from_ifname(tx.if_name_);
+      if (!port_opt.has_value()) {
+        HOLOSCAN_LOG_ERROR("Failed to get port from name {}", tx.if_name_);
+        return;
+      }
 
-  if (unlikely(impl->tx_meta_pool == nullptr)) {
-    impl->tx_meta_pool = rte_mempool_lookup("TX_META_POOL");
-  }
+      for (const auto &q: tx.queues_) {
+        const auto name = "TX_RING_P" + std::to_string(port_opt.value()) + "_Q" + std::to_string(q.common_.id_);
+        uint32_t key = (port_opt.value() << 16) | q.common_.id_;
+        tx_rings_[key] = rte_ring_lookup(name.c_str());
+        if (tx_rings_[key] == nullptr) {
+          HOLOSCAN_LOG_ERROR("Failed to look up ring for port {} queue {}", port_opt.value(),  q.common_.id_);
+          return;
+        }
+      }
 
-  auto burst = op_input.receive<AdvNetBurstParams *>("burst_in").value();
+      impl->tx_meta_pool = rte_mempool_lookup("TX_META_POOL");
+      init = true;
+    }
+  }
 
   AdvNetBurstParams *d_params;
-  if (rte_mempool_get(impl->tx_meta_pool, reinterpret_cast<void**>(&d_params)) != 0) {
-    HOLOSCAN_LOG_CRITICAL("Failed to get TX meta descriptor");
-    return;
-  }
+  AdvNetBurstParams *burst;
+  for (int i = 1; i <=2; i++) {
+    if (rte_mempool_get(impl->tx_meta_pool, reinterpret_cast<void**>(&d_params)) != 0) {
+      HOLOSCAN_LOG_CRITICAL("Failed to get TX meta descriptor");
+      return;
+    }
+    auto n = "burst_in" + std::to_string(i);
 
-  rte_memcpy(static_cast<void*>(d_params), burst, sizeof(*burst));
-  if (rte_ring_enqueue(impl->tx_ring, reinterpret_cast<void *>(d_params)) != 0) {
-    adv_net_free_tx_burst(burst);
-    rte_mempool_put(impl->tx_meta_pool, d_params);
-    HOLOSCAN_LOG_CRITICAL("Failed to enqueue TX work");
-    return;
-  }
+    auto rx = op_input.receive<AdvNetBurstParams *>(n.c_str());
+    if (rx.has_value() && rx.value() != nullptr) {
+      burst = rx.value();
+      rte_memcpy(static_cast<void*>(d_params), burst, sizeof(*burst));
+      struct rte_ring *ring = static_cast<struct rte_ring *>(tx_rings_[(burst->hdr.hdr.port_id << 16) | burst->hdr.hdr.q_id]);
+      //printf("TXOP %d %p %p ring %p msg %p\n", burst->hdr.hdr.port_id, burst->cpu_pkts, burst->gpu_pkts, ring, d_params);
+      if (rte_ring_enqueue(ring, reinterpret_cast<void *>(d_params)) != 0) {
+        adv_net_free_tx_burst(burst);
+        rte_mempool_put(impl->tx_meta_pool, d_params);
+        HOLOSCAN_LOG_CRITICAL("Failed to enqueue TX work");
+        return;
+      }
 
-  delete burst;
+      delete burst;
+    }
+  }
 }
 };  // namespace holoscan::ops

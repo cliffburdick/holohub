@@ -25,7 +25,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <sys/time.h>
-
+#include <nvToolsExtCudaRt.h>
 namespace holoscan::ops {
 
 // Example IPV4 UDP packet using Linux headers
@@ -92,6 +92,8 @@ class AdvNetworkingBenchTxOp : public Operator {
         "IP destination address", "IP destination address");
     spec.param<std::string>(eth_dst_addr_,
         "eth_dst_addr", "Ethernet destination address", "Ethernet destination address");
+    spec.param<uint16_t>(port_id_, "port_id",
+        "Interface number", "Interface number");
   }
 
   void compute(InputContext&, OutputContext& op_output, ExecutionContext&) override {
@@ -102,12 +104,10 @@ class AdvNetworkingBenchTxOp : public Operator {
      * expect the transmit operator to operate much faster than the receiver since it's not having to do any work
      * to construct packets, and just copying from a buffer into memory.
     */
-
     auto msg = adv_net_create_burst_params();
-    adv_net_set_hdr(msg, port_id, queue_id, batch_size_.get());
+    adv_net_set_hdr(msg, port_id_.get(), queue_id, batch_size_.get());
 
     while (!adv_net_tx_burst_available(msg)) {}
-
     if ((ret = adv_net_get_tx_pkt_burst(msg)) != AdvNetStatus::SUCCESS) {
       HOLOSCAN_LOG_ERROR("Error returned from adv_net_get_tx_pkt_burst: {}", static_cast<int>(ret));
       return;
@@ -180,7 +180,6 @@ class AdvNetworkingBenchTxOp : public Operator {
 
  private:
   void *full_batch_data_h_;
-  static constexpr uint16_t port_id = 0;
   static constexpr uint16_t queue_id = 0;
   char eth_dst_[6];
   uint8_t **gpu_bufs;
@@ -190,6 +189,7 @@ class AdvNetworkingBenchTxOp : public Operator {
   Parameter<int> hds_;                       // Header-data split point
   Parameter<bool> gpu_direct_;               // GPUDirect enabled
   Parameter<uint32_t> batch_size_;
+  Parameter<uint16_t> port_id_;
   Parameter<uint16_t> payload_size_;
   Parameter<uint16_t> udp_src_port_;
   Parameter<uint16_t> udp_dst_port_;
@@ -229,6 +229,8 @@ class AdvNetworkingBenchRxOp : public Operator {
 
       cudaStreamCreate(&streams_[n]);
       cudaEventCreate(&events_[n]);
+
+      nvtxNameCudaStreamA(streams_[n], std::string("stream " + std::to_string(AdvNetworkingBenchRxOp::s++)).c_str());
     }
 
     if (hds_.get()) {
@@ -357,12 +359,12 @@ class AdvNetworkingBenchRxOp : public Operator {
   Parameter<uint32_t> batch_size_;           // Batch size for one processing block
   Parameter<uint16_t> max_packet_size_;      // Maximum size of a single packet
   Parameter<uint16_t> header_size_;          // Header size of packet
-
+static int s;
   std::array<cudaStream_t, num_concurrent> streams_;
   std::array<cudaEvent_t, num_concurrent> events_;
   int cur_idx = 0;
 };
-
+int AdvNetworkingBenchRxOp::s = 0;
 }  // namespace holoscan::ops
 
 class App : public holoscan::Application {
@@ -376,18 +378,25 @@ class App : public holoscan::Application {
     if (rx_en) {
       auto bench_rx     = make_operator<ops::AdvNetworkingBenchRxOp>("bench_rx",
                                                                       from_config("bench_rx"));
+      auto bench_rx2     = make_operator<ops::AdvNetworkingBenchRxOp>("bench_rx2",
+                                                                      from_config("bench_rx2"));
       auto adv_net_rx   = make_operator<ops::AdvNetworkOpRx>("adv_network_rx",
                                               from_config("advanced_network"),
                                               make_condition<BooleanCondition>("is_alive", true));
-      add_flow(adv_net_rx, bench_rx, {{"burst_out", "burst_in"}});
+      add_flow(adv_net_rx, bench_rx, {{"bench_rx_out", "burst_in"}});
+      add_flow(adv_net_rx, bench_rx2, {{"bench_rx_out2", "burst_in"}});
     }
     if (tx_en) {
       auto bench_tx       = make_operator<ops::AdvNetworkingBenchTxOp>("bench_tx",
                                               from_config("bench_tx"),
                                               make_condition<BooleanCondition>("is_alive", true));
+      auto bench_tx2       = make_operator<ops::AdvNetworkingBenchTxOp>("bench_tx2",
+                                              from_config("bench_tx2"),
+                                              make_condition<BooleanCondition>("is_alive", true));
       auto adv_net_tx     = make_operator<ops::AdvNetworkOpTx>("adv_network_tx",
                                                               from_config("advanced_network"));
-      add_flow(bench_tx, adv_net_tx, {{"burst_out", "burst_in"}});
+      add_flow(bench_tx, adv_net_tx, {{"burst_out", "burst_in1"}});
+      add_flow(bench_tx2, adv_net_tx, {{"burst_out", "burst_in2"}});
     }
   }
 };
