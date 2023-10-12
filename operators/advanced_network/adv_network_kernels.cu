@@ -82,4 +82,31 @@ void populate_packets(uint8_t **gpu_bufs,
   uint32_t num_pkts,
   cudaStream_t stream) {
     populate_packets<<<num_pkts, 256, 0, stream>>>(gpu_bufs, pkt_len);
+}
+
+
+// Must be divisible by 4 bytes in this kernel!
+__global__ void copy_headers(uint8_t **gpu_bufs,
+  void *header, uint16_t hdr_size) {
+    int pkt = blockIdx.x;
+
+    for (int samp = threadIdx.x; samp < hdr_size / 4; samp += blockDim.x) {
+      auto p = reinterpret_cast<uint32_t *>(gpu_bufs[pkt] + samp * sizeof(uint32_t));
+      *p = *(reinterpret_cast<uint32_t*>(header) + samp);
+    }
+}
+
+__global__ void print_packets(uint8_t **gpu_bufs) {
+  uint8_t *p = gpu_bufs[0];
+  for (int i = 0; i < 64; i++) {
+    printf("%02X ", p[i]);
   }
+
+  printf("\n");
+}
+
+void copy_headers(uint8_t **gpu_bufs, void *header, uint16_t hdr_size, uint32_t num_pkts, cudaStream_t stream) {
+  copy_headers<<<num_pkts, 32, 0, stream>>>(gpu_bufs, header, hdr_size);
+  print_packets<<<1,1>>>(gpu_bufs);
+}
+

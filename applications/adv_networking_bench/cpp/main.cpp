@@ -74,6 +74,56 @@ class AdvNetworkingBenchTxOp : public Operator {
       cudaEventCreate(&events_[n]);
     }
 
+    if (gpu_direct_.get() && hds_.get() == 0) {
+      // If we're doing GPUDirect without HDS we stage the headers in GPU memory
+      // so we don't need to create them on the fly. This may not work for every application,
+      // but it's good enough here.
+      cudaMalloc(&gds_header_, header_size_.get());
+
+      AdvNetStatus ret;
+      auto msg = adv_net_create_burst_params();
+      adv_net_set_hdr(msg, port_id_.get(), queue_id, 1);
+      auto payload = malloc(header_size_.get());
+      if (payload == nullptr) {
+        HOLOSCAN_LOG_ERROR("Couldn't allocate memory for packet header template!");
+        return;
+      }
+
+      uint8_t **hptr = (uint8_t **)malloc(sizeof(uint8_t*));
+      msg->cpu_pkts = (void**)hptr;
+      hptr[0] = (uint8_t*)payload;
+
+      if ((ret = adv_net_set_cpu_eth_hdr(msg, 0, eth_dst_)) != AdvNetStatus::SUCCESS) {
+        HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", 0);
+        return;
+      }
+
+      const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);  // Remove Eth + IP size
+      if ((ret = adv_net_set_cpu_ipv4_hdr(msg,
+                                          0,
+                                          ip_len,
+                                          17,
+                                          ip_src_,
+                                          ip_dst_)) != AdvNetStatus::SUCCESS ) {
+        HOLOSCAN_LOG_ERROR("Failed to set IP header for packet {}", 0);
+        return;
+      }
+
+      if ((ret = adv_net_set_cpu_udp_hdr(msg,
+                                          0,
+                                          payload_size_.get() + header_size_.get() - (14 + 20 + 8), // Remove Eth + IP + UDP headers
+                                          udp_src_port_.get(),
+                                          udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
+        HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", 0);
+        return;
+      }
+
+      // At this point we have a dummy header created, so we copy it to the GPU
+      cudaMemcpy(gds_header_, adv_net_get_cpu_pkt_ptr(msg, 0), header_size_.get(), cudaMemcpyDefault);
+      free(hptr);
+      free(payload);
+    }
+
 
     HOLOSCAN_LOG_INFO("AdvNetworkingBenchTxOp::initialize() complete");
   }
@@ -100,6 +150,8 @@ class AdvNetworkingBenchTxOp : public Operator {
         "eth_dst_addr", "Ethernet destination address", "Ethernet destination address");
     spec.param<uint16_t>(port_id_, "port_id",
         "Interface number", "Interface number");
+    spec.param<uint16_t>(header_size_, "header_size",
+        "Header size", "Header size on each packet from L4 and below", 42);
   }
 
   void compute(InputContext&, OutputContext& op_output, ExecutionContext&) override {
@@ -113,11 +165,12 @@ class AdvNetworkingBenchTxOp : public Operator {
   //  if ( port_id_.get() == 0) {
   //   return;
   //  }
-//printf("here\n");
-   if (cudaEventQuery(events_[cur_idx]) != cudaSuccess) {
-    HOLOSCAN_LOG_ERROR("Falling behind on TX processing!");
-    return;
-   }
+
+    if (gpu_direct_.get() && (cudaEventQuery(events_[cur_idx]) != cudaSuccess)) {
+      HOLOSCAN_LOG_ERROR("Falling behind on TX processing!");
+      return;
+    }
+
     auto msg = adv_net_create_burst_params();
     adv_net_set_hdr(msg, port_id_.get(), queue_id, batch_size_.get());
 
@@ -136,22 +189,24 @@ class AdvNetworkingBenchTxOp : public Operator {
           HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", num_pkt);
         }
 
-        const auto ip_len = payload_size_.get() + 8;  // UDP header size
+        const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);  // Remove Eth + IP size
         if ((ret = adv_net_set_cpu_ipv4_hdr(msg,
-                                            num_pkt,
+                                            0,
                                             ip_len,
                                             17,
                                             ip_src_,
                                             ip_dst_)) != AdvNetStatus::SUCCESS ) {
-          HOLOSCAN_LOG_ERROR("Failed to set IP header for packet {}", num_pkt);
+          HOLOSCAN_LOG_ERROR("Failed to set IP header for packet {}", 0);
+          return;
         }
 
         if ((ret = adv_net_set_cpu_udp_hdr(msg,
-                                            num_pkt,
-                                            payload_size_.get(),
+                                            0,
+                                            payload_size_.get() + header_size_.get() - (14 + 20 + 8), // Remove Eth + IP + UDP headers
                                             udp_src_port_.get(),
                                             udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
-          HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", num_pkt);
+          HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", 0);
+          return;
         }
 
         // Only set payload on CPU buffer if we're not in HDS mode
@@ -164,19 +219,18 @@ class AdvNetworkingBenchTxOp : public Operator {
             HOLOSCAN_LOG_ERROR("Failed to set UDP payload for packet {}", num_pkt);
           }
         }
+      }
 
-        if (hds_.get() > 0) {
-          cpu_len = hds_.get();
-          gpu_len = payload_size_.get();
-
-          gpu_bufs[cur_idx][num_pkt] = reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
-        } else {
-          cpu_len = payload_size_.get() + 42;  // sizeof UDP header
-          gpu_len = 0;
-        }
+      if (hds_.get() > 0) {
+        cpu_len = hds_.get();
+        gpu_len = payload_size_.get();
+        gpu_bufs[cur_idx][num_pkt] = reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
+      } else if (!gpu_direct_.get()) {
+        cpu_len = payload_size_.get() + header_size_.get();  // sizeof UDP header
+        gpu_len = 0;
       } else {
         cpu_len = 0;
-        gpu_len = payload_size_.get() + 42;  // sizeof UDP header
+        gpu_len = payload_size_.get() + header_size_.get();  // sizeof UDP header
       }
 
       if ((ret = adv_net_set_pkt_len(msg, num_pkt, cpu_len, gpu_len)) != AdvNetStatus::SUCCESS) {
@@ -184,19 +238,28 @@ class AdvNetworkingBenchTxOp : public Operator {
       }
     }
 
+    if (gpu_direct_.get() && hds_.get() == 0) {
+      copy_headers(gpu_bufs[cur_idx], gds_header_, header_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
+    }
+
     // Populate packets with 16-bit numbers of {0,0}, {1,1}, ...
-    if (hds_.get() > 0) {
-      populate_packets(gpu_bufs[cur_idx], payload_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
+    if (gpu_direct_.get() && hds_.get() > 0) {
+      populate_packets(gpu_bufs[cur_idx], payload_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]); // FIX FOR HEADER OFFSET
       cudaEventRecord(events_[cur_idx], streams_[cur_idx]);
       out_q.push(TxMsg{msg, events_[cur_idx]});
     }
 
     cur_idx = (++cur_idx % num_concurrent);
 
-    const auto first = out_q.front();
-    if (cudaEventQuery(first.evt) == cudaSuccess) {
-      op_output.emit(first.msg, "burst_out");
-      out_q.pop();
+    if (gpu_direct_.get()) {
+      const auto first = out_q.front();
+      if (cudaEventQuery(first.evt) == cudaSuccess) {
+        op_output.emit(first.msg, "burst_out");
+        out_q.pop();
+      }
+    }
+    else {
+      op_output.emit(msg, "burst_out");
     }
   };
 
@@ -217,10 +280,12 @@ class AdvNetworkingBenchTxOp : public Operator {
   uint32_t ip_src_;
   uint32_t ip_dst_;
   cudaStream_t stream;
+  void *gds_header_;
   int cur_idx = 0;
   Parameter<int> hds_;                       // Header-data split point
   Parameter<bool> gpu_direct_;               // GPUDirect enabled
   Parameter<uint32_t> batch_size_;
+  Parameter<uint16_t> header_size_;          // Header size of packet
   Parameter<uint16_t> port_id_;
   Parameter<uint16_t> payload_size_;
   Parameter<uint16_t> udp_src_port_;

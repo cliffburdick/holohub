@@ -34,9 +34,9 @@ advanced_network:
         queues:
           - name: "ADC Samples"
             id: 0
-            gpu_direct: true
+            gpu_direct: false
             gpu_device: 0
-            split_boundary: 64
+            split_boundary: 0
             max_packet_size: 8064          # Maximum payload size
             num_concurrent_batches: 5      # Number of batches that can be used at any time
             batch_size: 10240              # Number of packets in a batch
@@ -45,9 +45,9 @@ advanced_network:
         queues:
           - name: "ADC Samples"
             id: 0
-            gpu_direct: true
+            gpu_direct: false
             gpu_device: 0
-            split_boundary: 64
+            split_boundary: 0
             max_packet_size: 8064          # Maximum payload size
             num_concurrent_batches: 5      # Number of batches that can be used at any time
             batch_size: 10240              # Number of packets in a batch
@@ -123,10 +123,11 @@ bench_tx:
   eth_dst_addr: 00:00:00:00:11:33   # Destination MAC
   udp_dst_port: 4096                  # UDP destination port
   udp_src_port: 4096                  # UDP source port
-  gpu_direct: true
-  split_boundary: 64
+  gpu_direct: false
+  split_boundary: 0
   batch_size: 10000
   payload_size: 8000
+  header_size: 64
   ip_src_addr: 192.168.0.1          # Source IP send from
   ip_dst_addr: 192.168.0.3          # Destination IP to send to
   port_id: 0
@@ -144,10 +145,11 @@ bench_tx2:
   eth_dst_addr: 00:00:00:00:11:22   # Destination MAC
   udp_dst_port: 4096                  # UDP destination port
   udp_src_port: 4096                  # UDP source port
-  gpu_direct: true
-  split_boundary: 64
+  gpu_direct: false
+  split_boundary: 0
   batch_size: 10000
   payload_size: 8000
+  header_size: 64
   ip_src_addr: 192.168.0.1          # Source IP send from
   ip_dst_addr: 192.168.0.2          # Destination IP to send to
   port_id: 1

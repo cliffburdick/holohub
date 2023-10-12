@@ -28,3 +28,5 @@ void populate_packets(uint8_t **gpu_bufs,
                       uint16_t pkt_len,
                       uint32_t num_pkts,
                       cudaStream_t stream);
+
+void copy_headers(uint8_t **gpu_bufs, void *header, uint16_t hdr_size, uint32_t num_pkts, cudaStream_t stream);

@@ -683,7 +683,7 @@ void DpdkMgr::Initialize() {
 }
 
 int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
-  HOLOSCAN_LOG_INFO("Setting up RX ring");
+  HOLOSCAN_LOG_DEBUG("Setting up RX ring");
   rx_ring = rte_ring_create("RX_RING", 2048, rte_socket_id(),
       RING_F_MC_RTS_DEQ | RING_F_MP_RTS_ENQ);
   if (rx_ring == nullptr) {
@@ -709,7 +709,7 @@ int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
     return -1;
   }
 
-  HOLOSCAN_LOG_INFO("Setting up RX meta pool");
+  HOLOSCAN_LOG_DEBUG("Setting up RX meta pool");
   rx_meta = rte_mempool_create("RX_META_POOL",
                     (1U << 6) - 1U,
                     sizeof(AdvNetBurstParams),
@@ -757,12 +757,12 @@ int DpdkMgr::SetupPoolsAndRings(int max_rx_batch, int max_tx_batch) {
         return -1;
       }
 
-      HOLOSCAN_LOG_INFO("Setting up TX burst pool {} with {} pointers at {}", 
+      HOLOSCAN_LOG_INFO("Setting up TX burst pool {} with {} pointers at {}",
             name, max_tx_batch, (void*)tx_burst_buffers[key]);
     }
   }
 
-  HOLOSCAN_LOG_INFO("Setting up TX meta pool");
+  HOLOSCAN_LOG_DEBUG("Setting up TX meta pool");
   tx_meta = rte_mempool_create("TX_META_POOL",
                     (1U << 6) - 1U,
                     sizeof(AdvNetBurstParams),
@@ -1216,6 +1216,15 @@ int DpdkMgr::tx_core(void *arg) {
       if (msg->cpu_pkts != nullptr) {
         tx = rte_eth_tx_burst(tparams->port,
               tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->cpu_pkts[pkts_tx]), to_send);
+              static int blah;
+        if (pkts_tx == 0 && blah <10 && rte_lcore_id() == 6) {
+          auto *ptr = rte_pktmbuf_mtod(reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx]), uint8_t*);
+          for (int i = 0; i < reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx])->data_len; i++) {
+            printf("%02X ", ptr[i]);
+          }
+          printf("\n");
+          blah++;
+        }
       } else {
         tx = rte_eth_tx_burst(tparams->port,
               tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->gpu_pkts[pkts_tx]), to_send);
