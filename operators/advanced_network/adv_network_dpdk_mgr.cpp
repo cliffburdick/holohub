@@ -507,6 +507,9 @@ void DpdkMgr::Initialize() {
               gpu_name, tx_mbufs, ext_mem->elt_size, (void*)q_backend->pools[1]);
 
           auto cpu_name = std::string("TX_CPU_POOL") + append;
+          HOLOSCAN_LOG_INFO("Creating CPU mempool for TX HDS: {} mbufs={} elsize={} ptrs={}/{}",
+            cpu_name, tx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
+            (void*)q_backend->pools[0], (void*)q_backend->pools[1]);
           q_backend->pools[0] = rte_pktmbuf_pool_create(cpu_name.c_str(),
               tx_mbufs,  MEMPOOL_CACHE_SIZE, 0, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
                   rte_socket_id());
@@ -515,10 +518,6 @@ void DpdkMgr::Initialize() {
                 cpu_name, rte_errno);
             return;
           }
-
-          HOLOSCAN_LOG_INFO("Created CPU mempool for TX HDS: {} mbufs={} elsize={} ptrs={}/{}",
-            cpu_name, tx_mbufs, q.common_.hds_ + RTE_PKTMBUF_HEADROOM,
-            (void*)q_backend->pools[0], (void*)q_backend->pools[1]);
         }
       } else {
         auto pkt_size = q.common_.max_packet_size_ + RTE_PKTMBUF_HEADROOM;
@@ -1170,8 +1169,9 @@ int DpdkMgr::tx_core(void *arg) {
   AdvNetBurstParams *msg;
   int64_t bursts = 0;
 
-  HOLOSCAN_LOG_INFO("Starting TX Core {}, port {}, queue {} socket {} using burst pool {} ring {}", rte_lcore_id(),
-        tparams->port, tparams->queue, rte_socket_id(), (void*)tparams->burst_pool, (void*)tparams->ring);
+  HOLOSCAN_LOG_INFO("Starting TX Core {}, port {}, queue {} socket {} using burst pool {} ring {}",
+        rte_lcore_id(), tparams->port, tparams->queue, rte_socket_id(),
+        (void*)tparams->burst_pool, (void*)tparams->ring);
 
   while (!force_quit.load()) {
     if (rte_ring_dequeue(tparams->ring, reinterpret_cast<void**>(&msg)) != 0) {
@@ -1193,20 +1193,20 @@ int DpdkMgr::tx_core(void *arg) {
 
     HOLOSCAN_LOG_DEBUG("Got burst in TX");
 
-    for (size_t p = 0; p < msg->hdr.hdr.num_pkts; p++) {
-      auto *mbuf = reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[p]);
-      auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
+    if (msg->cpu_pkts != nullptr) {
+      for (size_t p = 0; p < msg->hdr.hdr.num_pkts; p++) {
+        auto *mbuf = reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[p]);
+        auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-      rte_ether_addr_copy(&tparams->mac_addr, reinterpret_cast<rte_ether_addr *>(pkt + 6));
+        rte_ether_addr_copy(&tparams->mac_addr, reinterpret_cast<rte_ether_addr *>(pkt + 6));
 #pragma GCC diagnostic pop
+      }
     }
 
     auto pkts_to_transmit = static_cast<int64_t>(msg->hdr.hdr.num_pkts);
 
     size_t pkts_tx = 0;
-    // HOLOSCAN_LOG_INFO("{} msg {} Sending {} packets to pool {} {} port {} {} pools {} {} ring {}\n", rte_lcore_id(), (void*)msg, pkts_tx, (void*)reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx])->pool,
-    //   (void*)reinterpret_cast<rte_mbuf*>(msg->gpu_pkts[pkts_tx])->pool, tparams->port, msg->hdr.hdr.port_id, (void*)msg->cpu_pkts, (void*)msg->gpu_pkts, (void*)tparams->ring);
     while (pkts_tx != msg->hdr.hdr.num_pkts && !force_quit.load()) {
       auto to_send = static_cast<uint16_t>(
             std::min(static_cast<size_t>(DEFAULT_NUM_TX_BURST), msg->hdr.hdr.num_pkts - pkts_tx));
@@ -1216,15 +1216,6 @@ int DpdkMgr::tx_core(void *arg) {
       if (msg->cpu_pkts != nullptr) {
         tx = rte_eth_tx_burst(tparams->port,
               tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->cpu_pkts[pkts_tx]), to_send);
-              static int blah;
-        if (pkts_tx == 0 && blah <10 && rte_lcore_id() == 6) {
-          auto *ptr = rte_pktmbuf_mtod(reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx]), uint8_t*);
-          for (int i = 0; i < reinterpret_cast<rte_mbuf*>(msg->cpu_pkts[pkts_tx])->data_len; i++) {
-            printf("%02X ", ptr[i]);
-          }
-          printf("\n");
-          blah++;
-        }
       } else {
         tx = rte_eth_tx_burst(tparams->port,
               tparams->queue, reinterpret_cast<rte_mbuf**>(&msg->gpu_pkts[pkts_tx]), to_send);

@@ -34,7 +34,7 @@ advanced_network:
         queues:
           - name: "ADC Samples"
             id: 0
-            gpu_direct: false
+            gpu_direct: true
             gpu_device: 0
             split_boundary: 0
             max_packet_size: 8064          # Maximum payload size
@@ -45,7 +45,7 @@ advanced_network:
         queues:
           - name: "ADC Samples"
             id: 0
-            gpu_direct: false
+            gpu_direct: true
             gpu_device: 0
             split_boundary: 0
             max_packet_size: 8064          # Maximum payload size
@@ -123,7 +123,7 @@ bench_tx:
   eth_dst_addr: 00:00:00:00:11:33   # Destination MAC
   udp_dst_port: 4096                  # UDP destination port
   udp_src_port: 4096                  # UDP source port
-  gpu_direct: false
+  gpu_direct: true
   split_boundary: 0
   batch_size: 10000
   payload_size: 8000
@@ -145,7 +145,7 @@ bench_tx2:
   eth_dst_addr: 00:00:00:00:11:22   # Destination MAC
   udp_dst_port: 4096                  # UDP destination port
   udp_src_port: 4096                  # UDP source port
-  gpu_direct: false
+  gpu_direct: true
   split_boundary: 0
   batch_size: 10000
   payload_size: 8000

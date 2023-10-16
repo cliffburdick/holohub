@@ -100,7 +100,7 @@ class DpdkMgr {
     struct rte_ether_addr conf_ports_eth_addr[RTE_MAX_ETHPORTS];
     struct rte_ring *rx_ring;
     std::unordered_map<uint32_t, struct rte_ring *> tx_rings;
-    std::unordered_map<uint32_t, struct rte_mempool *> tx_burst_buffers;    
+    std::unordered_map<uint32_t, struct rte_mempool *> tx_burst_buffers;
     struct rte_mempool *rx_burst_buffer;
     struct rte_mempool *rx_meta;
     struct rte_mempool *tx_meta;

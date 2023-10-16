@@ -66,7 +66,7 @@ class AdvNetworkingBenchTxOp : public Operator {
     ip_dst_ = ntohl(ip_dst_);
 
     for (int n = 0; n < num_concurrent; n++) {
-      if (hds_.get() > 0) {
+      if (gpu_direct_.get()) {
         cudaMallocHost(&gpu_bufs[n], sizeof(uint8_t**) * batch_size_.get());
       }
 
@@ -80,48 +80,33 @@ class AdvNetworkingBenchTxOp : public Operator {
       // but it's good enough here.
       cudaMalloc(&gds_header_, header_size_.get());
 
-      AdvNetStatus ret;
-      auto msg = adv_net_create_burst_params();
-      adv_net_set_hdr(msg, port_id_.get(), queue_id, 1);
-      auto payload = malloc(header_size_.get());
-      if (payload == nullptr) {
-        HOLOSCAN_LOG_ERROR("Couldn't allocate memory for packet header template!");
-        return;
+      if ((ip_dst_ & 0xff) == 2) {
+        uint8_t payload[] =
+          { 0x00, 0x00, 0x00, 0x00, 0x11, 0x22, 0x48, 0xB0,
+            0x2D, 0xD9, 0x30, 0xA1, 0x08, 0x00, 0x45, 0x00,
+            0x1F, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11,
+            0x00, 0x00, 0xC0, 0xA8, 0x00, 0x01, 0xC0, 0xA8,
+            0x00, 0x02, 0x10, 0x00, 0x10, 0x00, 0x1F, 0x5E,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+        // At this point we have a dummy header created, so we copy it to the GPU
+        cudaMemcpy(gds_header_, payload, sizeof(payload), cudaMemcpyDefault);
+      } else {
+        uint8_t payload[] = {
+            0x00, 0x00, 0x00, 0x00, 0x11, 0x33, 0x48, 0xB0,
+            0x2D, 0xD9, 0x30, 0xA1, 0x08, 0x00, 0x45, 0x00,
+            0x1F, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11,
+            0x00, 0x00, 0xC0, 0xA8, 0x00, 0x01, 0xC0, 0xA8,
+            0x00, 0x03, 0x10, 0x00, 0x10, 0x00, 0x1F, 0x5E,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+        // At this point we have a dummy header created, so we copy it to the GPU
+        cudaMemcpy(gds_header_, payload, sizeof(payload), cudaMemcpyDefault);
       }
-
-      uint8_t **hptr = (uint8_t **)malloc(sizeof(uint8_t*));
-      msg->cpu_pkts = (void**)hptr;
-      hptr[0] = (uint8_t*)payload;
-
-      if ((ret = adv_net_set_cpu_eth_hdr(msg, 0, eth_dst_)) != AdvNetStatus::SUCCESS) {
-        HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", 0);
-        return;
-      }
-
-      const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);  // Remove Eth + IP size
-      if ((ret = adv_net_set_cpu_ipv4_hdr(msg,
-                                          0,
-                                          ip_len,
-                                          17,
-                                          ip_src_,
-                                          ip_dst_)) != AdvNetStatus::SUCCESS ) {
-        HOLOSCAN_LOG_ERROR("Failed to set IP header for packet {}", 0);
-        return;
-      }
-
-      if ((ret = adv_net_set_cpu_udp_hdr(msg,
-                                          0,
-                                          payload_size_.get() + header_size_.get() - (14 + 20 + 8), // Remove Eth + IP + UDP headers
-                                          udp_src_port_.get(),
-                                          udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
-        HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", 0);
-        return;
-      }
-
-      // At this point we have a dummy header created, so we copy it to the GPU
-      cudaMemcpy(gds_header_, adv_net_get_cpu_pkt_ptr(msg, 0), header_size_.get(), cudaMemcpyDefault);
-      free(hptr);
-      free(payload);
     }
 
 
@@ -162,10 +147,6 @@ class AdvNetworkingBenchTxOp : public Operator {
      * expect the transmit operator to operate much faster than the receiver since it's not having to do any work
      * to construct packets, and just copying from a buffer into memory.
     */
-  //  if ( port_id_.get() == 0) {
-  //   return;
-  //  }
-
     if (gpu_direct_.get() && (cudaEventQuery(events_[cur_idx]) != cudaSuccess)) {
       HOLOSCAN_LOG_ERROR("Falling behind on TX processing!");
       return;
@@ -189,7 +170,8 @@ class AdvNetworkingBenchTxOp : public Operator {
           HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", num_pkt);
         }
 
-        const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);  // Remove Eth + IP size
+        // Remove Eth + IP size
+        const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);
         if ((ret = adv_net_set_cpu_ipv4_hdr(msg,
                                             0,
                                             ip_len,
@@ -201,10 +183,11 @@ class AdvNetworkingBenchTxOp : public Operator {
         }
 
         if ((ret = adv_net_set_cpu_udp_hdr(msg,
-                                            0,
-                                            payload_size_.get() + header_size_.get() - (14 + 20 + 8), // Remove Eth + IP + UDP headers
-                                            udp_src_port_.get(),
-                                            udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
+                                        num_pkt,
+                                        // Remove Eth + IP + UDP headers
+                                        payload_size_.get() + header_size_.get() - (14 + 20 + 8),
+                                        udp_src_port_.get(),
+                                        udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
           HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", 0);
           return;
         }
@@ -224,27 +207,28 @@ class AdvNetworkingBenchTxOp : public Operator {
       if (hds_.get() > 0) {
         cpu_len = hds_.get();
         gpu_len = payload_size_.get();
-        gpu_bufs[cur_idx][num_pkt] = reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
+        gpu_bufs[cur_idx][num_pkt] =
+          reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
       } else if (!gpu_direct_.get()) {
         cpu_len = payload_size_.get() + header_size_.get();  // sizeof UDP header
         gpu_len = 0;
       } else {
         cpu_len = 0;
         gpu_len = payload_size_.get() + header_size_.get();  // sizeof UDP header
-      }
-
-      if ((ret = adv_net_set_pkt_len(msg, num_pkt, cpu_len, gpu_len)) != AdvNetStatus::SUCCESS) {
-        HOLOSCAN_LOG_ERROR("Failed to set lengths for packet {}", num_pkt);
+        gpu_bufs[cur_idx][num_pkt] =
+          reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
       }
     }
-
     if (gpu_direct_.get() && hds_.get() == 0) {
-      copy_headers(gpu_bufs[cur_idx], gds_header_, header_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
+      copy_headers(gpu_bufs[cur_idx], gds_header_,
+        header_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
     }
 
     // Populate packets with 16-bit numbers of {0,0}, {1,1}, ...
-    if (gpu_direct_.get() && hds_.get() > 0) {
-      populate_packets(gpu_bufs[cur_idx], payload_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]); // FIX FOR HEADER OFFSET
+    if (gpu_direct_.get()) {
+      const auto offset = (hds_.get() > 0) ? 0 : header_size_.get();
+      populate_packets(gpu_bufs[cur_idx], payload_size_.get(),
+          adv_net_get_num_pkts(msg), offset, streams_[cur_idx]);
       cudaEventRecord(events_[cur_idx], streams_[cur_idx]);
       out_q.push(TxMsg{msg, events_[cur_idx]});
     }
@@ -257,8 +241,7 @@ class AdvNetworkingBenchTxOp : public Operator {
         op_output.emit(first.msg, "burst_out");
         out_q.pop();
       }
-    }
-    else {
+    } else {
       op_output.emit(msg, "burst_out");
     }
   };
@@ -326,8 +309,6 @@ class AdvNetworkingBenchRxOp : public Operator {
 
       cudaStreamCreate(&streams_[n]);
       cudaEventCreate(&events_[n]);
-
-      nvtxNameCudaStreamA(streams_[n], std::string("stream " + std::to_string(AdvNetworkingBenchRxOp::s++)).c_str());
     }
 
     if (hds_.get()) {
@@ -412,8 +393,7 @@ class AdvNetworkingBenchRxOp : public Operator {
           if (cudaEventQuery(first.evt) == cudaSuccess) {
             adv_net_free_all_burst_pkts_and_burst(first.msg);
             out_q.pop();
-          }
-          else {
+          } else {
             break;
           }
         }

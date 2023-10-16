@@ -84,19 +84,21 @@ void AdvNetworkOpTx::compute(InputContext& op_input, [[maybe_unused]] OutputCont
   int n;
 
   if (!unlikely(init)) {
-    for (const auto &tx: impl->cfg.tx_) {
+    for (const auto &tx : impl->cfg.tx_) {
       auto port_opt = adv_net_get_port_from_ifname(tx.if_name_);
       if (!port_opt.has_value()) {
         HOLOSCAN_LOG_ERROR("Failed to get port from name {}", tx.if_name_);
         return;
       }
 
-      for (const auto &q: tx.queues_) {
-        const auto name = "TX_RING_P" + std::to_string(port_opt.value()) + "_Q" + std::to_string(q.common_.id_);
+      for (const auto &q : tx.queues_) {
+        const auto name = "TX_RING_P" +
+          std::to_string(port_opt.value()) + "_Q" + std::to_string(q.common_.id_);
         uint32_t key = (port_opt.value() << 16) | q.common_.id_;
         tx_rings_[key] = rte_ring_lookup(name.c_str());
         if (tx_rings_[key] == nullptr) {
-          HOLOSCAN_LOG_ERROR("Failed to look up ring for port {} queue {}", port_opt.value(),  q.common_.id_);
+          HOLOSCAN_LOG_ERROR("Failed to look up ring for port {} queue {}",
+                              port_opt.value(),  q.common_.id_);
           return;
         }
       }
@@ -119,8 +121,8 @@ void AdvNetworkOpTx::compute(InputContext& op_input, [[maybe_unused]] OutputCont
 
       AdvNetBurstParams *burst = rx.value();
       rte_memcpy(static_cast<void*>(d_params), burst, sizeof(*burst));
-      struct rte_ring *ring = static_cast<struct rte_ring *>(tx_rings_[(burst->hdr.hdr.port_id << 16) | burst->hdr.hdr.q_id]);
-      //printf("TXOP %d %p %p ring %p msg %p\n", burst->hdr.hdr.port_id, burst->cpu_pkts, burst->gpu_pkts, ring, d_params);
+      struct rte_ring *ring = static_cast<struct rte_ring *>
+          (tx_rings_[(burst->hdr.hdr.port_id << 16) | burst->hdr.hdr.q_id]);
       if (rte_ring_enqueue(ring, reinterpret_cast<void *>(d_params)) != 0) {
         adv_net_free_tx_burst(burst);
         rte_mempool_put(impl->tx_meta_pool, d_params);

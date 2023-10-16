@@ -120,7 +120,7 @@ bool adv_net_tx_burst_available(AdvNetBurstParams *burst) {
   const auto burst_pool_name = std::string("TX_BURST") + append;
   const auto burst_pool = rte_mempool_lookup(burst_pool_name.c_str());
   if (burst_pool == nullptr) {
-    HOLOSCAN_LOG_ERROR("Failed to look up burst pool name for port {} queue {}", 
+    HOLOSCAN_LOG_ERROR("Failed to look up burst pool name for port {} queue {}",
       burst->hdr.hdr.port_id, burst->hdr.hdr.q_id);
     return false;
   }
