@@ -84,10 +84,6 @@ void AdvNetworkOpRx::compute([[maybe_unused]] InputContext&, OutputContext& op_o
     impl->rx_ring = rte_ring_lookup("RX_RING");
   }
 
-  if (unlikely(impl->rx_desc_pool == nullptr)) {
-    impl->rx_desc_pool = rte_mempool_lookup("RX_BURST_POOL");
-  }
-
   if (unlikely(impl->rx_meta_pool == nullptr)) {
     impl->rx_meta_pool = rte_mempool_lookup("RX_META_POOL");
   }

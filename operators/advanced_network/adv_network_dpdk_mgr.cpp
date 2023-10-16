@@ -74,7 +74,13 @@ struct DPDKQueueConfig {
 void DpdkMgr::SetConfigAndInitialize(const AdvNetConfigYaml &cfg) {
   if (!initialized) {
     cfg_ = cfg;
-    Initialize();
+    cpu_set_t mask;
+    long nproc, i;
+
+    // Start Initialize in a separate thread so it doesn't set the affinity for the
+    // whole application
+    std::thread t(&DpdkMgr::Initialize, this);
+    t.join();
     Run();
   }
 }
@@ -170,7 +176,7 @@ void DpdkMgr::Initialize() {
   }
 
   int arg = 0;
-  std::string cores = std::to_string(cfg_.common_.master_core_) + ",";
+  std::string cores = std::to_string(cfg_.common_.master_core_) + ",";  // Master core must be first
   std::set<std::string> ifs;
   std::set<std::string> gpu_bdfs;
   std::unordered_map<uint16_t, std::pair<uint16_t, uint16_t>> port_q_num;
@@ -636,7 +642,7 @@ void DpdkMgr::Initialize() {
               local_port_conf[tx.port_id_].txmode.offloads);
           return;
         } else {
-          HOLOSCAN_LOG_INFO("Successfully setup TX queue");
+          HOLOSCAN_LOG_INFO("Successfully set up TX queue {}/{}", tx.port_id_, q.common_.id_);
         }
       }
 

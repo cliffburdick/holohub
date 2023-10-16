@@ -48,13 +48,19 @@ class AdvNetworkingBenchTxOp : public Operator {
     holoscan::Operator::initialize();
 
     size_t buf_size = batch_size_.get() * payload_size_.get();
-    cudaMallocHost(&full_batch_data_h_, buf_size);
+    if (!gpu_direct_.get()) {
+      full_batch_data_h_ = malloc(buf_size);
+      if (full_batch_data_h_ == nullptr) {
+        HOLOSCAN_LOG_ERROR("Failed to allocate CPU batch memory");
+        return;
+      }
 
-    // Fill in with increasing bytes
-    uint8_t *cptr = static_cast<uint8_t*>(full_batch_data_h_);
-    uint8_t cur = 0;
-    for (int b = 0; b < buf_size; b++) {
-      cptr[b] = cur++;
+      // Fill in with increasing bytes
+      uint8_t *cptr = static_cast<uint8_t*>(full_batch_data_h_);
+      uint8_t cur = 0;
+      for (int b = 0; b < buf_size; b++) {
+        cptr[b] = cur++;
+      }
     }
 
     adv_net_format_eth_addr(eth_dst_, eth_dst_addr_.get());
@@ -65,13 +71,13 @@ class AdvNetworkingBenchTxOp : public Operator {
     ip_src_ = ntohl(ip_src_);
     ip_dst_ = ntohl(ip_dst_);
 
-    for (int n = 0; n < num_concurrent; n++) {
-      if (gpu_direct_.get()) {
+    if (gpu_direct_.get()) {
+      for (int n = 0; n < num_concurrent; n++) {
         cudaMallocHost(&gpu_bufs[n], sizeof(uint8_t**) * batch_size_.get());
+        cudaStreamCreate(&streams_[n]);
+        cudaEventCreate(&events_[n]);
       }
-
-      cudaStreamCreate(&streams_[n]);
-      cudaEventCreate(&events_[n]);
+      HOLOSCAN_LOG_INFO("Initialized {} streams and events", num_concurrent);
     }
 
     if (gpu_direct_.get() && hds_.get() == 0) {
@@ -148,7 +154,7 @@ class AdvNetworkingBenchTxOp : public Operator {
      * to construct packets, and just copying from a buffer into memory.
     */
     if (gpu_direct_.get() && (cudaEventQuery(events_[cur_idx]) != cudaSuccess)) {
-      HOLOSCAN_LOG_ERROR("Falling behind on TX processing!");
+      HOLOSCAN_LOG_ERROR("Falling behind on TX processing for index {}!", cur_idx);
       return;
     }
 
@@ -168,17 +174,20 @@ class AdvNetworkingBenchTxOp : public Operator {
       if (!gpu_direct_.get() || hds_.get() > 0) {
         if ((ret = adv_net_set_cpu_eth_hdr(msg, num_pkt, eth_dst_)) != AdvNetStatus::SUCCESS) {
           HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", num_pkt);
+          adv_net_free_all_burst_pkts_and_burst(msg);
+          return;
         }
 
         // Remove Eth + IP size
         const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);
         if ((ret = adv_net_set_cpu_ipv4_hdr(msg,
-                                            0,
+                                            num_pkt,
                                             ip_len,
                                             17,
                                             ip_src_,
                                             ip_dst_)) != AdvNetStatus::SUCCESS ) {
           HOLOSCAN_LOG_ERROR("Failed to set IP header for packet {}", 0);
+          adv_net_free_all_burst_pkts_and_burst(msg);
           return;
         }
 
@@ -189,6 +198,7 @@ class AdvNetworkingBenchTxOp : public Operator {
                                         udp_src_port_.get(),
                                         udp_dst_port_.get())) != AdvNetStatus::SUCCESS) {
           HOLOSCAN_LOG_ERROR("Failed to set UDP header for packet {}", 0);
+          adv_net_free_all_burst_pkts_and_burst(msg);
           return;
         }
 
@@ -200,11 +210,13 @@ class AdvNetworkingBenchTxOp : public Operator {
                                               num_pkt * payload_size_.get(),
                                               payload_size_.get())) != AdvNetStatus::SUCCESS) {
             HOLOSCAN_LOG_ERROR("Failed to set UDP payload for packet {}", num_pkt);
+            adv_net_free_all_burst_pkts_and_burst(msg);
+            return;
           }
         }
       }
 
-      if (hds_.get() > 0) {
+      if (gpu_direct_.get() && hds_.get() > 0) {
         cpu_len = hds_.get();
         gpu_len = payload_size_.get();
         gpu_bufs[cur_idx][num_pkt] =
@@ -218,7 +230,14 @@ class AdvNetworkingBenchTxOp : public Operator {
         gpu_bufs[cur_idx][num_pkt] =
           reinterpret_cast<uint8_t*>(adv_net_get_gpu_pkt_ptr(msg, num_pkt));
       }
+
+       if ((ret = adv_net_set_pkt_len(msg, num_pkt, cpu_len, gpu_len)) != AdvNetStatus::SUCCESS) {
+         HOLOSCAN_LOG_ERROR("Failed to set lengths for packet {}", num_pkt);
+         adv_net_free_all_burst_pkts_and_burst(msg);
+         return;
+       }
     }
+
     if (gpu_direct_.get() && hds_.get() == 0) {
       copy_headers(gpu_bufs[cur_idx], gds_header_,
         header_size_.get(), adv_net_get_num_pkts(msg), streams_[cur_idx]);
@@ -504,7 +523,8 @@ int main(int argc, char** argv) {
   auto config_path = std::filesystem::canonical(argv[0]).parent_path();
   config_path += "/" + std::string(argv[1]);
   app->config(config_path);
-
+  app->scheduler(app->make_scheduler<holoscan::MultiThreadScheduler>(
+        "multithread-scheduler", app->from_config("scheduler")));
   app->run();
 
   return 0;
