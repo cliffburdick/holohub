@@ -438,8 +438,16 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
 
     // YAML is using exceptions, catch them
     try {
-      input_spec.common_.version        = node["version"].as<int32_t>();
+      input_spec.common_.version_       = node["version"].as<int32_t>();
       input_spec.common_.master_core_   = node["master_core"].as<int32_t>();
+
+      try {
+        input_spec.common_.rdma_.mode_    = GetRDMAModeFromString(node["rdma"]["mode"].as<std::string>());
+        input_spec.common_.rdma_.xmode_   = GetRDMATransportModeFromString(node["rdma"]["transport_mode"].as<std::string>());
+      }
+      catch (const std::exception& e) { // RDMA section is optional
+      }
+
       try {
         input_spec.common_.mgr_         = node["manager"].as<std::string>();
       } catch (const std::exception& e) {

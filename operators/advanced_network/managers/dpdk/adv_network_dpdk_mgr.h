@@ -125,6 +125,7 @@ class DpdkMgr : public ANOMgr {
     void shutdown() override;
     void print_stats() override;
     virtual void adjust_memory_regions() override;
+    virtual bool validate_config() override {}
 
 
  private:

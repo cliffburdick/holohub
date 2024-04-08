@@ -216,6 +216,68 @@ struct TxQueueConfig {
 //   std::string pattern_;
 // };
 
+enum class ManagerType {
+  DPDK,
+  RDMA,
+
+  INVALID
+};
+
+
+inline ManagerType GetMgrFromString(const std::string &mgr_str) {
+  if (mgr_str == "default" || mgr_str == "dpdk") {
+    return ManagerType::DPDK;
+  }
+  else if (mgr_str == "rdma") {
+    return ManagerType::RDMA;
+  }
+
+  return ManagerType::INVALID;
+}
+
+enum class RDMAMode {
+  CLIENT,
+  SERVER,
+
+  INVALID
+};
+
+inline RDMAMode GetRDMAModeFromString(const std::string &mode_str) {
+  if (mode_str == "client") {
+    return RDMAMode::CLIENT;
+  }
+  else if (mode_str == "server") {
+    return RDMAMode::SERVER;
+  }
+
+  return RDMAMode::INVALID;
+}
+
+enum class RDMATransportMode {
+  RC,
+  UC,
+  UD,
+
+  INVALID
+};
+
+inline RDMATransportMode GetRDMATransportModeFromString(const std::string &mode_str) {
+  if (mode_str == "RC") {
+    return RDMATransportMode::RC;
+  }
+  else if (mode_str == "UC") {
+    return RDMATransportMode::UC;
+  }
+
+  return RDMAMode::INVALID;
+}
+
+struct RDMAConfig {
+  RDMAMode mode_ = RDMAMode::INVALID;
+  RDMATransportMode xmode_ = RDMATransportMode::INVALID;
+};
+
+
 enum class FlowType {
   QUEUE
 };
@@ -236,9 +298,11 @@ struct FlowConfig {
 };
 
 struct CommonConfig {
-  int version;
+  int version_;
   int master_core_;
   std::string mgr_;
+  RDMAConfig rdma_;
+
   AdvNetDirection dir;
 };
 

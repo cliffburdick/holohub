@@ -81,6 +81,7 @@ class ANOMgr {
     virtual AdvNetStatus send_tx_burst(AdvNetBurstParams *burst) = 0;
     virtual AdvNetStatus get_mac(int port, char *mac) = 0;
     virtual int address_to_port(const std::string &addr) = 0;
+    virtual bool validate_config() = 0;
 
  protected:
     static constexpr uint32_t GPU_PAGE_SHIFT = 16;
