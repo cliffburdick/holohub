@@ -1173,12 +1173,12 @@ int DpdkMgr::rx_core_worker(void *arg) {
       total_pkts              += nb_rx;
       nb_rx                   -= to_copy;
 
+      burst->hdr.hdr.opcode = AdvNetOpCode::RECEIVE;  // Standard RECEIVE type (per-packet/non-RDMA)
+
       if (burst->hdr.hdr.num_pkts == tparams->batch_size) {
-        rte_ring_enqueue(tparams->ring, reinterpret_cast<void *>(burst));
         break;
       }
     } while (!force_quit.load());
-  }
 
   HOLOSCAN_LOG_ERROR("Total packets received by application (port/queue {}/{}): {}\n",
         tparams->port, tparams->queue, total_pkts);

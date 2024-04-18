@@ -38,14 +38,37 @@ static inline constexpr uint32_t MAX_NUM_TX_QUEUES = 32;
 static inline constexpr uint32_t MAX_INTERFACES = 4;
 
 /**
+ * Opcodes for ANO
+*/
+
+enum class AdvNetOpCode {
+  SEND,
+  RECEIVE,
+  RDMA_WRITE,
+  RDMA_WRITE_IMM,  
+  RDMA_READ,
+};
+
+struct AdvNetRdmaHdr {
+  std::string  local_mr_name;
+  std::string  remote_mr_name;
+  void        *raddr;
+  uint64_t     dst_key;
+  uint32_t     imm;
+};
+
+/**
  * @brief Header of AdvNetBurstParams
  *
  */
 struct AdvNetBurstHdrParams {
+  uint8_t version;
+  AdvNetOpCode  opcode;
   size_t        num_pkts;
   uint16_t      port_id;
   uint16_t      q_id;
   int           num_segs;
+  AdvNetRdmaHdr rdma;
 };
 
 struct AdvNetBurstHdr {
@@ -272,10 +295,67 @@ inline RDMATransportMode GetRDMATransportModeFromString(const std::string &mode_
   return RDMAMode::INVALID;
 }
 
+
 struct RDMAConfig {
   RDMAMode mode_ = RDMAMode::INVALID;
   RDMATransportMode xmode_ = RDMATransportMode::INVALID;
 };
+
+enum class MemoryKind {
+  HOST,
+  HOST_PINNED,
+  HUGE,
+  DEVICE,
+
+  INVALID
+};
+
+enum MemoryAccess {
+  MEM_ACCESS_LOCAL = 1U,
+  MEM_ACCESS_RDMA_WRITE = 1U << 1,
+  MEM_ACCESS_RDMA_READ = 1U << 2
+};
+
+
+inline MemoryKind GetMemoryKindFromString(const std::string &mode_str) {
+  if (mode_str == "host") {
+    return MemoryKind::HOST;
+  }
+  else if (mode_str == "host_pinned") {
+    return MemoryKind::HOST_PINNED;
+  }
+  else if (mode_str == "huge") {
+    return MemoryKind::HUGE;
+  }  
+  else if (mode_str == "device") {
+    return MemoryKind::DEVICE;
+  }
+
+  return MemoryKind::INVALID;
+}
+
+template <typename T>
+uint32_t GetMemoryAccessPropertiesFromList(const T& list) {
+  uint32_t access;
+  for (const auto &it: list) {
+    const auto str = it.as<std::string>();
+    if (str == "local") {
+      access |= MEM_ACCESS_LOCAL;
+    }
+    else if (str == "rdma_write") {
+      access |= MEM_ACCESS_RDMA_WRITE;
+    }
+    else if (str == "rdma_read") {
+      access |= MEM_ACCESS_RDMA_WRITE;
+    }
+    else {
+      HOLOSCAN_LOG_ERROR("Invalid access property for memory: {}", str);
+      return 0;
+    }
+  }
+
+  return access;
+}
 
 
 enum class FlowType {

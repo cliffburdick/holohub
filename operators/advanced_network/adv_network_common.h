@@ -442,10 +442,24 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
       input_spec.common_.master_core_   = node["master_core"].as<int32_t>();
 
       try {
-        input_spec.common_.rdma_.mode_    = GetRDMAModeFromString(node["rdma"]["mode"].as<std::string>());
-        input_spec.common_.rdma_.xmode_   = GetRDMATransportModeFromString(node["rdma"]["transport_mode"].as<std::string>());
+        const auto &mrs = node["memory"];
+        for (const auto &mr: mrs) {
+          MemoryRegion tmr;
+          tmr.name_ = mr["name"].as<std::string>();
+          tmr.kind_ = GetMemoryKindFromString(mr["kind"].as<std::string>());
+          tmr.buf_size_ = node["buf_size"].as<size_t>();
+          tmr.num_bufs_ = node["num_bufs"].as<size_t>();
+          tmr.access_ = GetMemoryAccessPropertiesFromList(mr["access"]);
+          try { // Ownership flag is optional
+            tmr.owned_ = mr["owned"].as<std::bool>();
+          }
+          catch (const std::exception& e) {
+            tmr.owned_ = true;
+          }
+        }
       }
-      catch (const std::exception& e) { // RDMA section is optional
+      catch (const std::exception& e) {
+        HOLOSCAN_LOG_ERROR("Must define at least one memory type");
       }
 
       try {
@@ -477,6 +491,39 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
           catch (const std::exception& e) {
             tmr.owned_ = true;
           }
+          catch (const std::exception& e) {}
+                    
+          pintf.flow_isolation_ = intf["flow_isolation"].as<bool>();
+          pintf.name_           = intf["name"].as<std::string>();
+          pintf.address_        = intf["address"].as<std::string>();
+          try {
+            pintf.accurate_send_ = intf["accurate_send"].as<bool>();
+          } catch (const std::exception& e) {
+            pintf.accurate_send_ = false;
+          }          
+
+          for (const auto &rx_item : intf["rx"]) {
+            holoscan::ops::AdvNetRxConfig rx_cfg;
+            
+            for (const auto &q_item :  rx_item["queues"]) {
+              holoscan::ops::RxQueueConfig q;
+              q.common_.name_             = q_item["name"].as<std::string>();
+              q.common_.id_               = q_item["id"].as<int>();
+              q.common_.gpu_direct_       = q_item["gpu_direct"].as<bool>();
+              if (q.common_.gpu_direct_) {
+                q.common_.gpu_dev_          = q_item["gpu_device"].as<int>();
+                q.common_.hds_              = q_item["split_boundary"].as<int>();
+              }
+
+              q.common_.cpu_cores_        = q_item["cpu_cores"].as<std::string>();
+              q.common_.max_packet_size_  = q_item["max_packet_size"].as<int>();
+              q.common_.num_concurrent_batches_  = q_item["num_concurrent_batches"].as<int>();
+              q.common_.max_packet_size_  = q_item["max_packet_size"].as<int>();
+              q.common_.batch_size_       = q_item["batch_size"].as<int>();
+              q.output_port_              = q_item["output_port"].as<std::string>();
+
+              rx_cfg.queues_.emplace_back(q);
+            }
 
           if (input_spec.mrs_.find(tmr.name_) != input_spec.mrs_.end()) {
             HOLOSCAN_LOG_CRITICAL("Duplicate memory region names: {}", tmr.name_);
@@ -497,6 +544,8 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
 
           ifcfg.name_             = intf["name"].as<std::string>();
           ifcfg.address_          = intf["address"].as<std::string>();
+          ifcfg.rdma_.mode_    = GetRDMAModeFromString(intf["rdma_mode"].as<std::string>());
+          ifcfg.rdma_.xmode_   = GetRDMATransportModeFromString(intf["rdma_transport_mode"].as<std::string>());          
           try {
             ifcfg.flow_isolation_   = intf["flow_isolation"].as<bool>();
           }
