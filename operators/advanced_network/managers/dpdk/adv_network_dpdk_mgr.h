@@ -135,7 +135,7 @@ class DpdkMgr : public ANOMgr {
   struct rte_flow* add_modify_flow_set(int port, int queue, const char* buf, int len,
                                        AdvNetDirection direction);
   void apply_tx_offloads(int port);
-
+struct rte_flow *addflow(int);
   std::array<std::string, MAX_IFS> if_names;
   std::array<std::string, MAX_IFS> pcie_addrs;
   std::array<struct rte_ether_addr, MAX_IFS> mac_addrs;
@@ -152,6 +152,7 @@ class DpdkMgr : public ANOMgr {
   struct rte_mempool* tx_meta;
   uint64_t timestamp_mask_{0};
   uint64_t timestamp_offset_{0};
+  uint32_t metaoff{0};
   std::array<struct rte_eth_conf, MAX_INTERFACES> local_port_conf;
 
   int num_init = 0;

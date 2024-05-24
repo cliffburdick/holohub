@@ -293,7 +293,7 @@ void DpdkMgr::initialize() {
   strncpy(_argv[arg++], "-l", max_arg_size - 1);
   strncpy(_argv[arg++], cores.c_str(), max_arg_size - 1);
 
-  if (cfg_.debug_) {
+  if (1) {
     strncpy(_argv[arg++], "--log-level=99", max_arg_size - 1);
     strncpy(_argv[arg++], "--log-level=pmd.net.mlx5:8", max_arg_size - 1);
   }
@@ -301,7 +301,7 @@ void DpdkMgr::initialize() {
   for (const auto& name : ifs) {
     strncpy(_argv[arg++], "-a", max_arg_size - 1);
     strncpy(_argv[arg++],
-            (name + std::string(",txq_inline_max=0,dv_flow_en=1")).c_str(),
+            (name + std::string(",txq_inline_max=0,dv_flow_en=1,dv_xmeta_en=1")).c_str(),
             max_arg_size - 1);
   }
 
@@ -538,6 +538,12 @@ void DpdkMgr::initialize() {
 
     local_port_conf[intf.port_id_].txmode.offloads = 0;
 
+//if (intf.port_id_ == 1) {
+  printf("REGISTERING");
+  rte_flow_dynf_metadata_register();
+
+//}
+
     if (tx.accurate_send_) {
       setup_accurate_send_scheduling_mask();
 
@@ -689,6 +695,7 @@ void DpdkMgr::initialize() {
     }
 
     apply_tx_offloads(intf.port_id_);
+    addflow(intf.port_id_);
   }
 
   if (setup_pools_and_rings(max_rx_batch_size, max_tx_batch_size) < 0) {
@@ -874,6 +881,133 @@ struct rte_flow* DpdkMgr::add_flow(int port, const FlowConfig& cfg) {
     flow = rte_flow_create(port, &attr, pattern, action, &error);
     return flow;
   }
+
+  return nullptr;
+}
+
+
+struct rte_flow *DpdkMgr::addflow(int port) {
+//   struct rte_flow_attr attr;
+//   struct rte_flow_item pattern[MAX_PATTERN_NUM];
+//   struct rte_flow_action action[3];
+//   struct rte_flow* flow = NULL;
+//   struct rte_flow_error error;
+//   struct rte_flow_item_eth eth;
+//   struct rte_flow_field_data src;
+//   struct rte_flow_field_data dst;
+//   struct rte_flow_action_modify_field mf;
+//   struct rte_flow_action_modify_field mf2;
+
+//   int res;
+// printf("FLOWWWW\n");
+//   memset(pattern, 0, sizeof(pattern));
+//   memset(action, 0, sizeof(action));
+//   memset(&eth, 0, sizeof(struct rte_flow_item_eth));
+//   memset(&attr, 0, sizeof(struct rte_flow_attr));
+//   attr.ingress      = 1;
+//   attr.egress       = 0;  
+//   attr.group        = 1;
+//   attr.priority     = 0;  
+  
+//   mf.operation = RTE_FLOW_MODIFY_SET;
+//   mf.src.field      = RTE_FLOW_FIELD_START;
+//   mf.src.level      = 0;
+//   mf.src.tag_index  = 0;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 14 * 8;
+
+//   mf.dst.field      = RTE_FLOW_FIELD_META;
+//   mf.dst.level      = 0;
+//   mf.dst.tag_index  = 0;
+//   mf.dst.offset     = 8 * 3;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 8;
+//   mf.width = 3 * 8;
+
+//   action[0].type  = RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+//   action[0].conf  = &mf;
+
+//   mf.operation      = RTE_FLOW_MODIFY_SET;
+//   mf.src.field      = RTE_FLOW_FIELD_START;
+//   mf.src.level      = 0;
+//   mf.src.tag_index  = 0;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 20 * 8;
+
+//   mf.dst.field      = RTE_FLOW_FIELD_META;
+//   mf.dst.level      = 0;
+//   mf.dst.tag_index  = 0;
+//   mf.dst.offset     = 0;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 8;
+//   mf.width = 0;
+
+//   action[1].type  = RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+//   action[1].conf  = &mf2;
+
+//   action[2].type  = RTE_FLOW_ACTION_TYPE_END;
+
+//   pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+//   pattern[0].spec = &eth;
+//   pattern[0].mask = &eth;
+
+//   pattern[1].type = RTE_FLOW_ITEM_TYPE_END;  
+
+//   res = rte_flow_validate(1, &attr, pattern, action, &error);
+//   if (!res) {
+//     flow = rte_flow_create(1, &attr, pattern, action, &error);
+//     return flow;
+//   }
+
+
+//   return nullptr;  
+
+  struct rte_flow_attr attr;
+  struct rte_flow_item pattern[MAX_PATTERN_NUM];
+  struct rte_flow_action action[MAX_ACTION_NUM];
+  struct rte_flow* flow = NULL;
+  struct rte_flow_action_modify_field mf;
+  struct rte_flow_error error;
+  struct rte_flow_item_eth eth;
+  struct rte_flow_field_data src;
+  struct rte_flow_field_data dst;
+
+  int res;
+printf("Setting META FLOW\n");
+  memset(pattern, 0, sizeof(pattern));
+  memset(action, 0, sizeof(action));
+  memset(&eth, 0, sizeof(struct rte_flow_item_eth));
+
+  /* Set the rule attribute, only ingress packets will be checked. 8< */
+  memset(&attr, 0, sizeof(struct rte_flow_attr));
+  attr.ingress = 1;
+  attr.egress = 0;
+  attr.group = 1;
+
+  struct rte_flow_action_set_meta sm;
+  sm.data = 0x01020304;
+  sm.mask = 0xffffffff;
+  action[0].type = RTE_FLOW_ACTION_TYPE_SET_META;
+  action[0].conf = &sm;
+  action[1].type = RTE_FLOW_ACTION_TYPE_END;
+  pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+  pattern[0].spec = &eth;
+  pattern[0].mask = &eth;
+  attr.priority = 0;
+
+  pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+  res = rte_flow_validate(port, &attr, pattern, action, &error);
+  if (!res) {
+    flow = rte_flow_create(port, &attr, pattern, action, &error);
+    return flow;
+  }
+
+
 
   return nullptr;
 }
@@ -1194,6 +1328,23 @@ int DpdkMgr::rx_core_worker(void* arg) {
 
       if (nb_rx == 0) { continue; }
 
+static int blah;
+      if ((blah % 10000) == 0){
+        
+        uint8_t buff[128];
+        auto *mbuf = reinterpret_cast<rte_mbuf*>(mbuf_arr[0]);
+        auto *dyn = RTE_FLOW_DYNF_METADATA(mbuf);
+        auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
+        cudaMemcpy(&buff[0], (uint8_t*)pkt, 64, cudaMemcpyDefault);
+          for (int i = 0; i < 64; i++) {
+            printf("%02X ", buff[i]);
+          }
+          printf("\n"); 
+
+          printf("%02X %02X %02X %02X\n", dyn[0], dyn[1], dyn[2], dyn[3]);     
+
+      }
+          blah++;
       // static int blah;
       // if (blah++ == 0) {
       //   for (int p = 0; p < 10; p++) {
@@ -1553,5 +1704,7 @@ uint64_t DpdkMgr::get_burst_tot_byte(AdvNetBurstParams* burst) {
 AdvNetBurstParams* DpdkMgr::create_burst_params() {
   return new AdvNetBurstParams();
 }
+
+
 
 };  // namespace holoscan::ops
