@@ -293,10 +293,10 @@ void DpdkMgr::initialize() {
   strncpy(_argv[arg++], "-l", max_arg_size - 1);
   strncpy(_argv[arg++], cores.c_str(), max_arg_size - 1);
 
-  if (1) {
-    strncpy(_argv[arg++], "--log-level=99", max_arg_size - 1);
-    strncpy(_argv[arg++], "--log-level=pmd.net.mlx5:8", max_arg_size - 1);
-  }
+  // if (1) {
+  //   strncpy(_argv[arg++], "--log-level=99", max_arg_size - 1);
+  //   strncpy(_argv[arg++], "--log-level=pmd.net.mlx5:8", max_arg_size - 1);
+  // } 
 
   for (const auto& name : ifs) {
     strncpy(_argv[arg++], "-a", max_arg_size - 1);
@@ -539,9 +539,9 @@ void DpdkMgr::initialize() {
     local_port_conf[intf.port_id_].txmode.offloads = 0;
 
 //if (intf.port_id_ == 1) {
-  printf("REGISTERING");
+  
   rte_flow_dynf_metadata_register();
-
+printf("REGISTERING %d", rte_flow_dynf_metadata_avail());
 //}
 
     if (tx.accurate_send_) {
@@ -695,7 +695,8 @@ void DpdkMgr::initialize() {
     }
 
     apply_tx_offloads(intf.port_id_);
-    addflow(intf.port_id_);
+    // addjump(intf.port_id_);    
+    // addflow(intf.port_id_);
   }
 
   if (setup_pools_and_rings(max_rx_batch_size, max_tx_batch_size) < 0) {
@@ -1007,7 +1008,47 @@ printf("Setting META FLOW\n");
     return flow;
   }
 
+  return nullptr;
+}
 
+struct rte_flow* DpdkMgr::addjump(int port) {
+  struct rte_flow_attr attr;
+  struct rte_flow_item pattern[MAX_PATTERN_NUM];
+  struct rte_flow_action action[MAX_ACTION_NUM];
+  struct rte_flow* flow = NULL;
+  struct rte_flow_error error;
+  struct rte_flow_item_eth eth;
+  struct rte_flow_field_data src;
+  struct rte_flow_field_data dst;
+
+  int res;
+  memset(pattern, 0, sizeof(pattern));
+  memset(action, 0, sizeof(action));
+  memset(&eth, 0, sizeof(struct rte_flow_item_eth));
+
+  /* Set the rule attribute, only ingress packets will be checked. 8< */
+  memset(&attr, 0, sizeof(struct rte_flow_attr));
+  attr.ingress = 1;
+  attr.egress = 0;
+  attr.group = 0;
+
+  struct rte_flow_action_jump sm;
+  sm.group = 1;
+  action[0].type = RTE_FLOW_ACTION_TYPE_JUMP;
+  action[0].conf = &sm;
+  action[1].type = RTE_FLOW_ACTION_TYPE_END;
+  pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+  pattern[0].spec = &eth;
+  pattern[0].mask = &eth;
+  attr.priority = 0;
+
+  pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+  res = rte_flow_validate(port, &attr, pattern, action, &error);
+  if (!res) {
+    flow = rte_flow_create(port, &attr, pattern, action, &error);
+    return flow;
+  }
 
   return nullptr;
 }
@@ -1108,12 +1149,13 @@ void DpdkMgr::apply_tx_offloads(int port) {
 ///  \brief
 ///
 ////////////////////////////////////////////////////////////////////////////////
-void PrintDpdkStats() {
+void DpdkMgr::PrintDpdkStats() {
   struct rte_eth_stats eth_stats;
+  memset(&eth_stats, 0, sizeof(eth_stats));
   int len, ret, i;
-  for (i = 0; i < 2; i++) {
+  for (i = 0; i < cfg_.ifs_.size(); i++) {
     rte_eth_stats_get(i, &eth_stats);
-    printf("\n\nPort %u:\n", i);
+    printf("\n\nPort %u (%s):\n", i, cfg_.ifs_[i].name_.c_str());
 
     printf(" - Received packets:    %lu\n", eth_stats.ipackets);
     printf(" - Transmit packets:    %lu\n", eth_stats.opackets);
@@ -1123,55 +1165,20 @@ void PrintDpdkStats() {
     printf(" - Errored packets:     %lu\n", eth_stats.ierrors);
     printf(" - RX out of buffers:   %lu\n", eth_stats.rx_nombuf);
 
-    // printf("\nExtended Stats\n");
-
-    // struct rte_eth_xstat *xstats;
-    // struct rte_eth_xstat_name *xstats_names;
-    // static const char *stats_border = "_______";
-
-    // /* Clear screen and move to top left */
-    // len = rte_eth_xstats_get(i, NULL, 0);
-    // if (len < 0)
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get(%u) failed: %d", 0,
-    //             len);
-    // xstats = (struct rte_eth_xstat *)calloc(len, sizeof(*xstats));
-    // if (xstats == NULL)
-    //     rte_exit(EXIT_FAILURE,
-    //             "Failed to calloc memory for xstats");
-    // ret = rte_eth_xstats_get(i, xstats, len);
-    // if (ret < 0 || ret > len) {
-    //     free(xstats);
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get(%u) len%i failed: %d",
-    //             0, len, ret);
-    // }
-    // xstats_names = (struct rte_eth_xstat_name *)calloc(len, sizeof(*xstats_names));
-    // if (xstats_names == NULL) {
-    //     free(xstats);
-    //     rte_exit(EXIT_FAILURE,
-    //             "Failed to calloc memory for xstats_names");
-    // }
-    // ret = rte_eth_xstats_get_names(i, xstats_names, len);
-    // if (ret < 0 || ret > len) {
-    //     free(xstats);
-    //     free(xstats_names);
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get_names(%u) len%i failed: %d",
-    //             0, len, ret);
-    // }
-    // for (i = 0; i < len; i++) {
-    //     if (xstats[i].value > 0)
-    //         printf("Port %u: %s %s:\t\t%lu\n",
-    //                 0, stats_border,
-    //                 xstats_names[i].name,
-    //                 xstats[i].value);
-    // }
-
-    // free(xstats);
-    // free(xstats_names);
-    // printf("done\n");
+    printf(" - Queue stats:\n");
+    for (int q = 0; 
+             q < std::max(cfg_.ifs_[i].rx_.queues_.size(), cfg_.ifs_[i].tx_.queues_.size());
+             q++) {
+      printf("  - %d\n", q);
+      printf("    - RX packets: %lu\n", eth_stats.q_ipackets[q]);
+      printf("    - RX bytes  : %lu\n", eth_stats.q_ibytes[q]);      
+      printf("    - TX packets: %lu\n", eth_stats.q_opackets[q]);
+      printf("    - TX bytes  : %lu\n", eth_stats.q_obytes[q]);      
+      printf("    - Errors    : %lu\n", eth_stats.q_errors[q]);    
+    }
   }
+
+
 
   printf("\n");
 }
@@ -1328,23 +1335,23 @@ int DpdkMgr::rx_core_worker(void* arg) {
 
       if (nb_rx == 0) { continue; }
 
-static int blah;
-      if ((blah % 10000) == 0){
+// static int blah;
+//       if ((blah % 10000) == 0){
         
-        uint8_t buff[128];
-        auto *mbuf = reinterpret_cast<rte_mbuf*>(mbuf_arr[0]);
-        auto *dyn = RTE_FLOW_DYNF_METADATA(mbuf);
-        auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
-        cudaMemcpy(&buff[0], (uint8_t*)pkt, 64, cudaMemcpyDefault);
-          for (int i = 0; i < 64; i++) {
-            printf("%02X ", buff[i]);
-          }
-          printf("\n"); 
+//         uint8_t buff[128];
+//         auto *mbuf = reinterpret_cast<rte_mbuf*>(mbuf_arr[0]);
+//         auto *dyn = RTE_FLOW_DYNF_METADATA(mbuf);
+//         auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
+//         cudaMemcpy(&buff[0], (uint8_t*)pkt, 64, cudaMemcpyDefault);
+//           for (int i = 0; i < 64; i++) {
+//             printf("%02X ", buff[i]);
+//           }
+//           printf("\n"); 
 
-          printf("%02X %02X %02X %02X\n", dyn[0], dyn[1], dyn[2], dyn[3]);     
+//           printf("%02X %02X %02X %02X\n", dyn[0], dyn[1], dyn[2], dyn[3]);     
 
-      }
-          blah++;
+//       }
+//          blah++;
       // static int blah;
       // if (blah++ == 0) {
       //   for (int p = 0; p < 10; p++) {

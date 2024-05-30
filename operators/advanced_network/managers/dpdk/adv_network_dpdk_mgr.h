@@ -122,6 +122,7 @@ class DpdkMgr : public ANOMgr {
   bool validate_config() const override;
 
  private:
+  void PrintDpdkStats();
   static std::string generate_random_string(int len);
   static int rx_core_worker(void* arg);
   static int tx_core_worker(void* arg);
@@ -136,6 +137,7 @@ class DpdkMgr : public ANOMgr {
                                        AdvNetDirection direction);
   void apply_tx_offloads(int port);
 struct rte_flow *addflow(int);
+struct rte_flow* addjump(int);
   std::array<std::string, MAX_IFS> if_names;
   std::array<std::string, MAX_IFS> pcie_addrs;
   std::array<struct rte_ether_addr, MAX_IFS> mac_addrs;
