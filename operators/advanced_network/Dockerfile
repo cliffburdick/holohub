@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM nvcr.io/nvidia/clara-holoscan/holoscan:v2.0.0-dgpu
+FROM --platform=$BUILDPLATFORM nvcr.io/nvidia/clara-holoscan/holoscan:v2.1.0-dgpu
 
 ARG UBUNTU_VERSION=22.04
 ARG OFED_VERSION=24.01-0.3.3.1

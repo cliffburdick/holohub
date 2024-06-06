@@ -1625,8 +1625,8 @@ bool DocaMgr::tx_burst_available(AdvNetBurstParams* burst) {
 }
 
 AdvNetStatus DocaMgr::set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                                   const std::initializer_list<int>& lens) {
-  burst->pkt_lens[0][idx] = *(lens.begin());
+                                   const std::vector<int>& lens) {
+  burst->pkt_lens[0][idx] = lens[0];
   return AdvNetStatus::SUCCESS;
 }
 

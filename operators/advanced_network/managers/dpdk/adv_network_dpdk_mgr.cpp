@@ -1267,7 +1267,7 @@ int DpdkMgr::tx_core_worker(void* arg) {
       }
     }
 
-    HOLOSCAN_LOG_DEBUG("Got burst in TX");
+    HOLOSCAN_LOG_INFO("Got burst in TX");
 
     //     if (msg->pkts[0] != nullptr) {
     //       for (size_t p = 0; p < msg->hdr.hdr.num_pkts; p++) {
@@ -1432,11 +1432,11 @@ bool DpdkMgr::tx_burst_available(AdvNetBurstParams* burst) {
 }
 
 AdvNetStatus DpdkMgr::set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                                   const std::initializer_list<int>& lens) {
+                                   const std::vector<int>& lens) {
   uint32_t ttl_len = 0;
   for (int seg = 0; seg < burst->hdr.hdr.num_segs; seg++) {
-    reinterpret_cast<rte_mbuf**>(burst->pkts[seg])[idx]->data_len = *(lens.begin() + seg);
-    ttl_len += *(lens.begin() + seg);
+    reinterpret_cast<rte_mbuf**>(burst->pkts[seg])[idx]->data_len = lens[seg];
+    ttl_len += lens[seg];
   }
 
   reinterpret_cast<rte_mbuf**>(burst->pkts[0])[idx]->pkt_len = ttl_len;

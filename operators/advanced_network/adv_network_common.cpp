@@ -189,12 +189,12 @@ AdvNetStatus adv_net_set_udp_payload(std::shared_ptr<AdvNetBurstParams> burst, i
 }
 
 AdvNetStatus adv_net_set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                                  const std::initializer_list<int>& lens) {
+                                  const std::vector<int>& lens) {
   return g_ano_mgr->set_pkt_lens(burst, idx, lens);
 }
 
 AdvNetStatus adv_net_set_pkt_lens(std::shared_ptr<AdvNetBurstParams> burst, int idx,
-                                  const std::initializer_list<int>& lens) {
+                                  const std::vector<int>& lens) {
   return adv_net_set_pkt_lens(burst.get(), idx, lens);
 }
 

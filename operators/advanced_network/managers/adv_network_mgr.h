@@ -53,7 +53,7 @@ class ANOMgr {
   virtual bool tx_burst_available(AdvNetBurstParams* burst) = 0;
 
   virtual AdvNetStatus set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                                    const std::initializer_list<int>& lens) = 0;
+                                    const std::vector<int>& lens) = 0;
   virtual void free_all_seg_pkts(AdvNetBurstParams* burst, int seg) = 0;
   virtual void free_all_pkts(AdvNetBurstParams* burst) = 0;
   virtual void free_pkt_seg(AdvNetBurstParams* burst, int seg, int pkt) = 0;

@@ -227,9 +227,9 @@ void adv_net_free_all_pkts_and_burst(std::shared_ptr<AdvNetBurstParams> burst);
  *    SUCCESS: Packet populated successfully
  */
 AdvNetStatus adv_net_set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                                  const std::initializer_list<int>& lens);
+                                  const std::vector<int>& lens);
 AdvNetStatus adv_net_set_pkt_lens(std::shared_ptr<AdvNetBurstParams> burst, int idx,
-                                  const std::initializer_list<int>& lens);
+                                  const std::vector<int>& lens);
 
 /**
  * @brief Set packet TX time
@@ -249,7 +249,6 @@ AdvNetStatus adv_net_set_pkt_tx_time(AdvNetBurstParams* burst, int idx, uint64_t
 AdvNetStatus adv_net_set_pkt_tx_time(std::shared_ptr<AdvNetBurstParams> burst, int idx,
                                      uint64_t time);
 
-uint64_t adv_net_get_burst_tot_byte(std::shared_ptr<AdvNetBurstParams> burst);
 
 /**
  * @brief Frees all segments of a single packet
@@ -270,17 +269,6 @@ uint64_t adv_net_get_burst_tot_byte(std::shared_ptr<AdvNetBurstParams> burst);
  * @param idx Index of packet
  */
 void adv_net_free_pkt_seg(AdvNetBurstParams* burst, int seg, int idx);
-
-/**
- * @brief Free all packets in a burst
- *
- * Frees all packets in a burst of packets. After completion, all CPU and GPU packets will
- * be released back to the free pool.
- *
- * @param burst Burst structure containing packet lists
- */
-void adv_net_free_all_pkts(AdvNetBurstParams* burst);
-void adv_net_free_all_pkts(std::shared_ptr<AdvNetBurstParams> burst);
 
 /**
  * @brief Free all packets for a single segment in a burst

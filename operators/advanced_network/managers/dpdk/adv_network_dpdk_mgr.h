@@ -97,7 +97,7 @@ class DpdkMgr : public ANOMgr {
   bool tx_burst_available(AdvNetBurstParams* burst) override;
 
   AdvNetStatus set_pkt_lens(AdvNetBurstParams* burst, int idx,
-                            const std::initializer_list<int>& lens) override;
+                            const std::vector<int>& lens) override;
   void free_all_seg_pkts(AdvNetBurstParams* burst, int seg) override;
   void free_pkt_seg(AdvNetBurstParams* burst, int seg, int pkt) override;
   void free_pkt(AdvNetBurstParams* burst, int pkt) override;

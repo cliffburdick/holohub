@@ -15,8 +15,9 @@
 
 import logging
 import sys
-
 import cupy
+import socket
+import binascii
 from holoscan.conditions import CountCondition
 from holoscan.core import Application, Operator, OperatorSpec
 
@@ -25,9 +26,13 @@ from holohub.advanced_network_common import (
     adv_net_create_burst_params,
     adv_net_get_num_pkts,
     adv_net_get_tx_pkt_burst,
-    adv_net_set_cpu_udp_payload,
+    adv_net_set_udp_payload,
     adv_net_set_hdr,
     adv_net_tx_burst_available,
+    adv_net_set_eth_hdr,
+    adv_net_set_ipv4_hdr,
+    adv_net_set_pkt_lens,
+    adv_net_format_eth_addr,
 )
 from holohub.advanced_network_tx import AdvNetworkOpTx
 
@@ -40,8 +45,14 @@ class AdvancedNetworkingBenchTxOp(Operator):
         self.index = 1
         self.batch_size = batch_size
         self.payload_size = payload_size
+        self.eth_dst_addr = binascii.unhexlify(kwargs['eth_dst_addr'].replace(':', ''))
+        self.header_size = kwargs['header_size']
+        self.ip_src_addr = int.from_bytes(socket.inet_pton(socket.AF_INET, kwargs['ip_src_addr']), "big")
+        self.ip_dst_addr = int.from_bytes(socket.inet_pton(socket.AF_INET, kwargs['ip_dst_addr']), "big")
         self.buf_size = self.batch_size * self.payload_size
         self.buf = cupy.cuda.alloc_pinned_memory(self.buf_size)
+
+        
         super().__init__(fragment, *args, **kwargs)
 
     def initialize(self):
@@ -51,27 +62,53 @@ class AdvancedNetworkingBenchTxOp(Operator):
         spec.output("msg_out")
 
     def compute(self, op_input, op_output, context):
-        while not adv_net_tx_burst_available(self.batch_size):
-            continue
-
         msg = adv_net_create_burst_params()
-        adv_net_set_hdr(msg, 0, 0, self.batch_size)
+        adv_net_set_hdr(msg, 0, 0, self.batch_size, 1)
+
+        while not adv_net_tx_burst_available(msg):
+            continue
 
         ret = adv_net_get_tx_pkt_burst(msg)
         if ret != AdvNetStatus.SUCCESS:
             logger.error(f"Error returned from adv_net_get_tx_pkt_burst: {ret}")
             return
-
+        
         for num_pkt in range(adv_net_get_num_pkts(msg)):
-            ret = adv_net_set_cpu_udp_payload(
+            ret = adv_net_set_eth_hdr(msg, num_pkt, self.eth_dst_addr)
+            if ret != AdvNetStatus.SUCCESS:
+                logger.error(
+                    f"Error returned from adv_net_set_eth_hdr: "
+                    f"{ret} != {AdvNetStatus.SUCCESS}"
+                )
+                return
+            
+            ip_len = self.payload_size + self.header_size - (14 + 20)
+            ret = adv_net_set_ipv4_hdr(msg, num_pkt, ip_len, 17, self.ip_src_addr, self.ip_dst_addr)
+            if ret != AdvNetStatus.SUCCESS:
+                logger.error(
+                    f"Error returned from adv_net_set_eth_hdr: "
+                    f"{ret} != {AdvNetStatus.SUCCESS}"
+                )
+                return  
+            
+            ret = adv_net_set_udp_payload(
                 msg, num_pkt, self.buf.ptr + num_pkt * self.payload_size, self.payload_size
             )
             if ret != AdvNetStatus.SUCCESS:
                 logger.error(
-                    f"Error returned from adv_net_set_cpu_udp_payload: "
+                    f"Error returned from adv_net_set_udp_payload: "
                     f"{ret} != {AdvNetStatus.SUCCESS}"
                 )
                 return
+            
+            ret = adv_net_set_pkt_lens(msg, num_pkt, [self.payload_size + self.header_size])
+            if ret != AdvNetStatus.SUCCESS:
+                logger.error(
+                    f"Error returned from adv_net_set_pkt_lens: "
+                    f"{ret} != {AdvNetStatus.SUCCESS}"
+                )
+                return            
+
         print(type(msg))
         op_output.emit(msg, "msg_out")
 
@@ -82,11 +119,10 @@ NUM_MSGS = 10
 
 class App(Application):
     def compose(self):
-        print("HERE")
         # Define the tx and rx operators, allowing the tx operator to execute 10 times
         if (
             "cfg" in self.kwargs("advanced_network")
-            and "tx" in self.kwargs("advanced_network")["cfg"]
+            and "tx" in self.kwargs("advanced_network")["cfg"]["interfaces"][0]
         ):
             tx = AdvancedNetworkingBenchTxOp(
                 self, CountCondition(self, NUM_MSGS), name="tx", **self.kwargs("bench_tx")
@@ -108,4 +144,5 @@ if __name__ == "__main__":
     config_path = sys.argv[1]
     app = App()
     app.config(config_path)
+    print("CFG")
     app.run()
