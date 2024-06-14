@@ -19,6 +19,35 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <holoscan/python/core/emitter_receiver_registry.hpp>
+
+// namespace holoscan {
+//   template <>
+//   struct emitter_receiver<holoscan::ops::AdvNetBurstParams*> {
+//     static void emit(py::object& data, const std::string& name, PyOutputContext& op_output) {
+//       py::gil_scoped_release release;
+//       op_output.emit<holoscan::ops::AdvNetBurstParams*>(data.cast<holoscan::ops::AdvNetBurstParams*>(), name.c_str());
+//       return;
+//     }
+//     static py::object receive(std::any result) {
+//       auto burst = std::any_cast<holoscan::ops::AdvNetBurstParams*>(result);
+//       py::object py_burst = py::cast(*burst);
+//       return py_burst;
+//     }
+//   };
+// }
+namespace holoscan {
+  template <>
+  struct emitter_receiver<holoscan::ops::AdvNetBurstParams*> {
+    static void emit(py::object& data, const std::string& name, PyOutputContext& op_output) {
+      return;
+    }
+    static py::object receive(std::any result) {
+      return py::none();
+    }
+  };
+}
+
 namespace py = pybind11;
 
 namespace holoscan::ops {
@@ -237,6 +266,10 @@ PYBIND11_MODULE(_advanced_network_common, m) {
   //     .def_readwrite("hdr", &AdvNetBurstParams::hdr)
   //     .def_readwrite("cpu_pkts", &AdvNetBurstParams::cpu_pkts)
   //     .def_readwrite("gpu_pkts", &AdvNetBurstParams::gpu_pkts);
+
+  m.def("register_types", [](EmitterReceiverRegistry& registry) {
+    registry.add_emitter_receiver<holoscan::ops::AdvNetBurstParams*>("AdvNetBurstParams*"s);
+  });
 
   py::class_<AdvNetBurstHdrParams>(m, "AdvNetBurstHdrParams").def(py::init<>());
   py::class_<AdvNetBurstHdr>(m, "AdvNetBurstHdr").def(py::init<>());

@@ -110,7 +110,7 @@ class AdvancedNetworkingBenchTxOp(Operator):
                 return            
 
         print(type(msg))
-        op_output.emit(msg, "msg_out")
+        op_output.emit(msg, "msg_out", "AdvNetBurstParams*")
 
 
 # Now define a simple application using the operators defined above
