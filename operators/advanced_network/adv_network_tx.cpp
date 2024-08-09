@@ -67,7 +67,7 @@ void AdvNetworkOpTx::compute(InputContext& op_input, [[maybe_unused]] OutputCont
 
   AdvNetBurstParams *d_params;
   auto rx = op_input.receive<AdvNetBurstParams *>("burst_in");
-printf("GOT ONE\n");
+
   if (rx.has_value() && rx.value() != nullptr) {
     const auto tx_buf_res = g_ano_mgr->get_tx_meta_buf(&d_params);
     if (tx_buf_res != AdvNetStatus::SUCCESS) {
@@ -77,7 +77,7 @@ printf("GOT ONE\n");
 
     AdvNetBurstParams *burst = rx.value();
     memcpy(static_cast<void*>(d_params), burst, sizeof(*burst));
-printf("sending\n");
+
     const auto tx_res = g_ano_mgr->send_tx_burst(d_params);
     if (tx_res != AdvNetStatus::SUCCESS) {
       HOLOSCAN_LOG_ERROR("Failed to send TX burst to ANO: {}", static_cast<int>(tx_res));

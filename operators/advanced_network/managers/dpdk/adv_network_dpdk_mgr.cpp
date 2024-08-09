@@ -1267,8 +1267,6 @@ int DpdkMgr::tx_core_worker(void* arg) {
       }
     }
 
-    HOLOSCAN_LOG_INFO("Got burst in TX");
-
     //     if (msg->pkts[0] != nullptr) {
     //       for (size_t p = 0; p < msg->hdr.hdr.num_pkts; p++) {
     //         auto *mbuf = reinterpret_cast<rte_mbuf*>(msg->pkts[0][p]);
