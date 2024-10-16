@@ -512,7 +512,7 @@ void DpdkMgr::initialize() {
     local_port_conf[intf.port_id_].txmode.offloads = 0;
 
     // Subtract eth headers since driver adds that on
-    max_pkt_size = std::max(max_pkt_size, 64UL);
+    max_pkt_size = std::max(max_pkt_size, 64UL) - (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
     local_port_conf[intf.port_id_].rxmode.mtu = std::min(max_pkt_size, (size_t)JUMBFRAME_SIZE);
     local_port_conf[intf.port_id_].rxmode.max_lro_pkt_size =
         local_port_conf[intf.port_id_].rxmode.mtu;
@@ -674,6 +674,11 @@ void DpdkMgr::initialize() {
     apply_tx_offloads(intf.port_id_);
   }
 
+  if (add_32b_match_rule(0, 1, 0x0010f803) == nullptr) {
+    HOLOSCAN_LOG_ERROR("Failed to add 32b match flow!");
+    return;    
+  }
+
   if (setup_pools_and_rings(max_rx_batch_size, max_tx_batch_size) < 0) {
     HOLOSCAN_LOG_ERROR("Failed to set up pools and rings!");
     return;
@@ -800,6 +805,9 @@ struct rte_flow* DpdkMgr::add_flow(int port, const FlowConfig& cfg) {
   struct rte_flow_item_udp udp_mask;
   struct rte_flow_item udp_item;
   /* >8 End of declaring structs being used. */
+  struct rte_flow_item_ipv4 ip_spec;
+  struct rte_flow_item_ipv4 ip_mask;
+  struct rte_flow_item ip_item;
   int res;
 
   memset(pattern, 0, sizeof(pattern));
@@ -818,6 +826,17 @@ struct rte_flow* DpdkMgr::add_flow(int port, const FlowConfig& cfg) {
   action[0].conf = &queue;
   action[1].type = RTE_FLOW_ACTION_TYPE_END;
 
+
+  // memset(&ip_spec, 0, sizeof(ip_spec));
+  // memset(&ip_mask, 0, sizeof(ip_mask));
+  // ip_spec.hdr.total_length = htons(cfg.match_.udp_len_);
+  // ip_mask.hdr.total_length = 0xffff;
+  // ip_item.type = RTE_FLOW_ITEM_TYPE_IPV4;
+  // ip_item.spec = &ip_spec;
+  // ip_item.mask = &ip_mask;
+  // ip_item.last = nullptr;
+  // pattern[1] = ip_item;
+
   /*
    * set the first level of the pattern (ETH).
    * since in this example we just want to get the
@@ -829,15 +848,17 @@ struct rte_flow* DpdkMgr::add_flow(int port, const FlowConfig& cfg) {
   pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
 
   /* >8 End of setting the first level of the pattern. */
-  udp_spec.hdr.src_port = htons(cfg.match_.udp_src_);
-  udp_spec.hdr.dst_port = htons(cfg.match_.udp_dst_);
-  udp_spec.hdr.dgram_len = 0;
+  HOLOSCAN_LOG_INFO("Adding flow for UDP src {}, dst {}, len {}", 
+        cfg.match_.udp_src_, cfg.match_.udp_dst_, cfg.match_.udp_len_);
+  udp_spec.hdr.src_port   = htons(cfg.match_.udp_src_);
+  udp_spec.hdr.dst_port   = htons(cfg.match_.udp_dst_);
+  udp_spec.hdr.dgram_len  = htons(cfg.match_.udp_len_);
   udp_spec.hdr.dgram_cksum = 0;
 
-  udp_mask.hdr.src_port = 0xffff;
-  udp_mask.hdr.dst_port = 0xffff;
-  udp_mask.hdr.dgram_len = 0;
-  udp_mask.hdr.dgram_cksum = 0;
+  udp_mask.hdr.src_port     = 0xffff;
+  udp_mask.hdr.dst_port     = 0xffff;
+  udp_mask.hdr.dgram_len    = 0xffff;
+  udp_mask.hdr.dgram_cksum  = 0;
 
   udp_item.type = RTE_FLOW_ITEM_TYPE_UDP;
   udp_item.spec = &udp_spec;
@@ -861,6 +882,297 @@ struct rte_flow* DpdkMgr::add_flow(int port, const FlowConfig& cfg) {
 
   return nullptr;
 }
+
+struct rte_flow *DpdkMgr::add_32b_match_rule(uint16_t port_id, uint16_t rx_q,uint32_t pattern)
+{
+	struct rte_flow_error error;
+
+  // First, insert a flow to set the value from the field we're looking for
+  {
+    struct rte_flow_attr attr;
+    struct rte_flow_item pattern[MAX_PATTERN_NUM];
+    struct rte_flow_action action[MAX_ACTION_NUM];
+    struct rte_flow* flow = NULL;
+    struct rte_flow_action_set_tag st{0};
+    struct rte_flow_item_tag tag_item{0};
+    struct rte_flow_action_modify_field mf;
+
+	  struct rte_flow_template_table* table = NULL;    
+
+    // Set the tag register to the value we're matching
+    mf.operation = RTE_FLOW_MODIFY_SET;
+
+    mf.src.field      = RTE_FLOW_FIELD_IPV4_SRC;
+    mf.src.level      = 0;
+    mf.src.tag_index  = 0;
+    mf.src.type       = 0;
+    mf.src.class_id   = 0;
+    mf.src.offset     = 0;
+
+    mf.dst.field      = RTE_FLOW_FIELD_TAG;
+    mf.dst.level      = 0;
+    mf.dst.tag_index  = 0;
+    mf.src.type       = 0;
+    mf.src.class_id   = 0;
+    mf.src.offset     = 0;  
+
+    action[0].type  = RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+    action[0].conf  = &mf;
+    action[1].type  = RTE_FLOW_ACTION_TYPE_END;
+    attr.priority = 0;  
+
+    pattern[0].type = RTE_FLOW_ITEM_TYPE_END;
+
+    auto res = rte_flow_validate(port_id, &attr, pattern, action, &error);
+    if (!res) {
+      flow = rte_flow_create(port_id, &attr, pattern, action, &error);
+      if (flow == nullptr) {
+        HOLOSCAN_LOG_ERROR("rte_flow_create failed");
+      }
+    }      
+  }
+
+
+	struct rte_flow_action_queue queue = { .index = rx_q };
+	struct rte_flow * flow;
+	struct rte_flow_op_attr ops_attr = {
+			/**
+			  * When set, the requested action will not be sent to the HW immediately.
+			  * The application must call the rte_flow_queue_push to actually send it.
+			  */
+			.postpone = 0,
+	};
+	struct rte_flow_attr flow_attr = {
+			.group = 0,		
+			.priority = 0, 	
+			.ingress = 1, 	
+			.egress = 0, 	
+			.transfer = 0,
+			.reserved = 0,
+
+	};
+
+	struct rte_flow_template_table_attr table_attr = {
+			.flow_attr = flow_attr,
+			.nb_flows = 1,
+	};
+	struct rte_flow_actions_template_attr  action_attr= {
+			.ingress = 1,
+	};
+
+	struct rte_flow_item titems[MAX_PATTERN_NUM];
+	struct rte_flow_action tactions[MAX_ACTION_NUM];
+	struct rte_flow_action masks[MAX_ACTION_NUM];
+
+	struct rte_flow_pattern_template_attr attr;
+
+	struct rte_flow_pattern_template* item_pattern;
+	struct rte_flow_actions_template* action_pattern;
+
+
+	struct rte_flow_item items[MAX_PATTERN_NUM];
+	struct rte_flow_action actions[MAX_ACTION_NUM];
+
+	struct rte_flow_op_result res[1];
+	uint32_t ret;
+	uint32_t i;
+
+
+	memset(titems, 0, sizeof(titems));
+	memset(tactions, 0, sizeof(tactions));
+	memset(masks, 0, sizeof(masks));
+	memset(&attr, 0, sizeof(attr));
+	memset(items, 0, sizeof(items));
+	memset(actions, 0, sizeof(actions));
+
+	attr.relaxed_matching = 1;
+	attr.ingress = 1;
+	/*
+	 * Create the action sequence.
+	 * one action only,  move packet to queue
+	 */
+	tactions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+	tactions[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+  titems[0].type = RTE_FLOW_ITEM_TYPE_COMPARE;
+	titems[1].type = RTE_FLOW_ITEM_TYPE_END;  
+
+
+  struct rte_flow_item_compare comp{};
+  struct rte_flow_item_compare comp_m{};
+  comp.operation = RTE_FLOW_ITEM_COMPARE_EQ;
+  comp.width = 32;
+  comp.a.field = RTE_FLOW_FIELD_TAG;
+  comp.a.tag_index = 0;
+  comp.b.field = RTE_FLOW_FIELD_VALUE;
+  uint32_t *val_offset = (uint32_t*)&comp.b.value[sizeof(comp.b.value) - sizeof(uint32_t)];
+  *val_offset       = 0x0010f803;
+  comp.b.tag_index = 0;
+
+  comp_m.operation = RTE_FLOW_ITEM_COMPARE_EQ;
+  comp_m.width = UINT32_MAX;
+  comp_m.a.field = RTE_FLOW_FIELD_TAG;
+  comp_m.a.offset = UINT32_MAX;
+  comp_m.a.tag_index = 0;
+  comp_m.b.field = RTE_FLOW_FIELD_VALUE;
+  comp_m.b.tag_index = 0;  
+  comp_m.b.offset = 0;
+
+  items[0].type = RTE_FLOW_ITEM_TYPE_COMPARE;
+  items[0].mask = &comp_m;
+  items[0].spec = &comp;
+
+	memcpy(masks, tactions, sizeof(masks));
+	actions[0].conf = NULL;
+
+	memcpy(actions, tactions, sizeof(masks));
+	actions[0].conf = &queue; 
+
+	/* Initialize items values */
+	memcpy(items, titems, sizeof(items));
+	titems[0].mask = &comp_m;
+	items[0].spec = &comp;
+
+	/* Create templates*/
+	item_pattern = rte_flow_pattern_template_create(port_id, &attr, titems, &error);
+
+	action_pattern = rte_flow_actions_template_create(port_id, &action_attr,
+						tactions, masks, &error);
+
+	auto table = rte_flow_template_table_create(port_id,
+					&table_attr, &item_pattern, 1,
+					&action_pattern, 1, &error);
+
+	/* Enqueue the rule by inserting the spec part */
+	if (table) {
+			flow = rte_flow_async_create(port_id,
+			rx_q, /* Flow queue used to insert the rule. */
+			&ops_attr,
+			table,
+			items,
+			0, /* Pattern template index in the table. */
+			actions,
+			0, /* Actions template index in the table. */
+			0, /* user data */
+			&error);
+	} else {
+		return 0;
+	}
+	
+	/* Busy pull */
+	do {
+		ret = rte_flow_pull(port_id, rx_q, res, 1, &error);
+	} while (ret == 0);
+
+	for (i = 0; i < ret; i++) {
+		if (res[i].status == RTE_FLOW_OP_SUCCESS)
+			/* notice user_data field is retreived as well */
+			return flow;
+		else
+			return NULL;
+	}
+	return NULL;
+}
+
+
+// struct rte_flow* DpdkMgr::add_compare_match(int port, int queue) {
+//   struct rte_flow_attr attr;
+//   struct rte_flow_item pattern[MAX_PATTERN_NUM];
+//   struct rte_flow_action action[MAX_ACTION_NUM];
+//   struct rte_flow* flow = NULL;
+//   struct rte_flow_action_set_tag st{0};
+//   struct rte_flow_item_tag tag_item{0};
+//   struct rte_flow_action_modify_field mf;
+
+//   struct rte_flow_error error;
+//   struct rte_flow_item_compare comp = {0};
+//   struct rte_flow_item_compare comp_m = {0};
+
+//   // Set the tag register to the value we're matching
+//   mf.operation = RTE_FLOW_MODIFY_SET;
+
+//   mf.src.field      = RTE_FLOW_FIELD_VALUE;
+//   mf.src.level      = 0;
+//   mf.src.tag_index  = 0;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 0;
+//   uin32_t *val_offset = &mf.src.value[sizeof(mf.src.value) - sizeof(uint32_t)];
+//   *val_offset       = 0x0010f803
+
+//   mf.dst.field      = RTE_FLOW_FIELD_TAG;
+//   mf.dst.level      = 0;
+//   mf.dst.tag_index  = 0;
+//   mf.src.type       = 0;
+//   mf.src.class_id   = 0;
+//   mf.src.offset     = 0;  
+
+//   action[0].type  = RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+//   action[0].conf  = &mf;
+//   action[1].type  = RTE_FLOW_ACTION_TYPE_END;
+//   // pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+//   // pattern[0].spec = &eth;
+//   // pattern[0].mask = &eth;
+//   attr.priority = 0;  
+
+//   pattern[0].type = RTE_FLOW_ITEM_TYPE_END;
+
+//   res = rte_flow_validate(port, &attr, pattern, action, &error);
+//   if (!res) {
+//     flow = rte_flow_create(port, &attr, pattern, action, &error);
+//     if (flow == nullptr) {
+//       HOLOSCAN_LOG_ERROR("rte_flow_create failed");
+//     }
+
+//     //return flow;
+//   }  
+
+
+
+// 	comp.operation = RTE_FLOW_ITEM_COMPARE_EQ;​
+// 	comp.width = 32;​
+// 	comp.a.field = RTE_FLOW_FIELD_META;​
+// 	comp.a.tag_index = 0;​
+// 	comp.b.field = RTE_FLOW_FIELD_TAG;​
+// 	comp.b.tag_index = 0;​
+
+// 	comp_m.operation = RTE_FLOW_ITEM_COMPARE_EQ;​
+// 	comp_m.width = UINT32_MAX;​
+// 	comp_m.a.field = RTE_FLOW_FIELD_META;​
+// 	comp_m.a.tag_index = 0;​
+// 	comp_m.a.offset = UINT32_MAX;​
+// 	comp_m.b.field = RTE_FLOW_FIELD_TAG;​
+// 	comp_m.b.tag_index = 0;​
+// 	comp_m.b.offset = 0;​
+
+// 	item[1].type = RTE_FLOW_ITEM_TYPE_COMPARE;​
+// 	item[1].mask = &comp_m;​
+// 	item[1].spec = &comp;​
+// ​
+// 	item[1].type = RTE_FLOW_ITEM_TYPE_END;  
+
+//   int res;
+
+//   memset(pattern, 0, sizeof(pattern));
+//   memset(action, 0, sizeof(action));
+
+//   /* Set the rule attribute, only ingress packets will be checked. 8< */
+//   memset(&attr, 0, sizeof(struct rte_flow_attr));
+//   attr.ingress = (direction == AdvNetDirection::RX) ? 1 : 0;
+//   attr.egress = (direction == AdvNetDirection::TX) ? 1 : 0;
+
+
+
+//   pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+//   res = rte_flow_validate(port, &attr, pattern, action, &error);
+//   if (!res) {
+//     flow = rte_flow_create(port, &attr, pattern, action, &error);
+//     return flow;
+//   }
+
+//   return nullptr;
+// }
 
 struct rte_flow* DpdkMgr::add_modify_flow_set(int port, int queue, const char* buf, int len,
                                               AdvNetDirection direction) {
@@ -961,8 +1273,11 @@ void DpdkMgr::apply_tx_offloads(int port) {
 void PrintDpdkStats() {
   struct rte_eth_stats eth_stats;
   int len, ret, i;
-  for (i = 0; i < 2; i++) {
-    rte_eth_stats_get(i, &eth_stats);
+  for (i = 0; i < rte_eth_dev_count_total(); i++) {
+    if (rte_eth_stats_get(i, &eth_stats) != 0) {
+      continue;
+    }
+
     printf("\n\nPort %u:\n", i);
 
     printf(" - Received packets:    %lu\n", eth_stats.ipackets);
@@ -973,54 +1288,54 @@ void PrintDpdkStats() {
     printf(" - Errored packets:     %lu\n", eth_stats.ierrors);
     printf(" - RX out of buffers:   %lu\n", eth_stats.rx_nombuf);
 
-    // printf("\nExtended Stats\n");
+    printf("\nExtended Stats\n");
 
-    // struct rte_eth_xstat *xstats;
-    // struct rte_eth_xstat_name *xstats_names;
-    // static const char *stats_border = "_______";
+    struct rte_eth_xstat *xstats;
+    struct rte_eth_xstat_name *xstats_names;
+    static const char *stats_border = "_______";
 
-    // /* Clear screen and move to top left */
-    // len = rte_eth_xstats_get(i, NULL, 0);
-    // if (len < 0)
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get(%u) failed: %d", 0,
-    //             len);
-    // xstats = (struct rte_eth_xstat *)calloc(len, sizeof(*xstats));
-    // if (xstats == NULL)
-    //     rte_exit(EXIT_FAILURE,
-    //             "Failed to calloc memory for xstats");
-    // ret = rte_eth_xstats_get(i, xstats, len);
-    // if (ret < 0 || ret > len) {
-    //     free(xstats);
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get(%u) len%i failed: %d",
-    //             0, len, ret);
-    // }
-    // xstats_names = (struct rte_eth_xstat_name *)calloc(len, sizeof(*xstats_names));
-    // if (xstats_names == NULL) {
-    //     free(xstats);
-    //     rte_exit(EXIT_FAILURE,
-    //             "Failed to calloc memory for xstats_names");
-    // }
-    // ret = rte_eth_xstats_get_names(i, xstats_names, len);
-    // if (ret < 0 || ret > len) {
-    //     free(xstats);
-    //     free(xstats_names);
-    //     rte_exit(EXIT_FAILURE,
-    //             "rte_eth_xstats_get_names(%u) len%i failed: %d",
-    //             0, len, ret);
-    // }
-    // for (i = 0; i < len; i++) {
-    //     if (xstats[i].value > 0)
-    //         printf("Port %u: %s %s:\t\t%lu\n",
-    //                 0, stats_border,
-    //                 xstats_names[i].name,
-    //                 xstats[i].value);
-    // }
+    /* Clear screen and move to top left */
+    len = rte_eth_xstats_get(i, NULL, 0);
+    if (len < 0)
+        rte_exit(EXIT_FAILURE,
+                "rte_eth_xstats_get(%u) failed: %d", 0,
+                len);
+    xstats = (struct rte_eth_xstat *)calloc(len, sizeof(*xstats));
+    if (xstats == NULL)
+        rte_exit(EXIT_FAILURE,
+                "Failed to calloc memory for xstats");
+    ret = rte_eth_xstats_get(i, xstats, len);
+    if (ret < 0 || ret > len) {
+        free(xstats);
+        rte_exit(EXIT_FAILURE,
+                "rte_eth_xstats_get(%u) len%i failed: %d",
+                0, len, ret);
+    }
+    xstats_names = (struct rte_eth_xstat_name *)calloc(len, sizeof(*xstats_names));
+    if (xstats_names == NULL) {
+        free(xstats);
+        rte_exit(EXIT_FAILURE,
+                "Failed to calloc memory for xstats_names");
+    }
+    ret = rte_eth_xstats_get_names(i, xstats_names, len);
+    if (ret < 0 || ret > len) {
+        free(xstats);
+        free(xstats_names);
+        rte_exit(EXIT_FAILURE,
+                "rte_eth_xstats_get_names(%u) len%i failed: %d",
+                0, len, ret);
+    }
+    for (i = 0; i < len; i++) {
+        if (xstats[i].value > 0)
+            printf("Port %u: %s %s:\t\t%lu\n",
+                    0, stats_border,
+                    xstats_names[i].name,
+                    xstats[i].value);
+    }
 
-    // free(xstats);
-    // free(xstats_names);
-    // printf("done\n");
+    free(xstats);
+    free(xstats_names);
+    printf("done\n");
   }
 
   printf("\n");
@@ -1169,7 +1484,7 @@ int DpdkMgr::rx_core_worker(void* arg) {
       nb_rx = 0;
     } else {
       burst->hdr.hdr.num_pkts = 0;
-    }
+    } 
 
     // DPDK on some ARM platforms requires that you always pass nb_pkts as a number divisible
     // by 4. If you pass something other than that, you get undefined results and will end up
@@ -1184,6 +1499,19 @@ int DpdkMgr::rx_core_worker(void* arg) {
                                DEFAULT_NUM_RX_BURST);
 
       if (nb_rx == 0) { continue; }
+
+      static int blah;
+      if (tparams->queue==1 ) {
+        for (int p = 0; p < nb_rx; p++) {
+          auto *mbuf = reinterpret_cast<rte_mbuf*>(mbuf_arr[0]);
+          auto *pkt  = rte_pktmbuf_mtod(mbuf, uint8_t*);
+          for (int i = 0; i < 64; i++) {
+            printf("%02X ", ((uint8_t*)pkt)[i]);
+          }
+          printf("\n");
+        }
+        blah = 1;
+      }         
 
       to_copy = std::min(nb_rx, (int)(tparams->batch_size - burst->hdr.hdr.num_pkts));
       memcpy(&burst->pkts[0][burst->hdr.hdr.num_pkts], &mbuf_arr, sizeof(rte_mbuf*) * to_copy);

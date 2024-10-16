@@ -81,6 +81,7 @@ advanced_network:
                 type: queue
                 id: 1
               match:
+                udp_len: 3000
                 udp_src: 4096 #12288
                 udp_dst: 4096 #12288                          
 bench_rx:

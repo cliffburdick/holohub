@@ -129,6 +129,7 @@ class DpdkMgr : public ANOMgr {
   void setup_accurate_send_scheduling_mask();
   int setup_pools_and_rings(int max_rx_batch, int max_tx_batch);
   struct rte_flow* add_flow(int port, const FlowConfig& cfg);
+  struct rte_flow *add_32b_match_rule(uint16_t port_id, uint16_t rx_q,uint32_t pattern);
   AdvNetStatus register_mrs();
   AdvNetStatus map_mrs();
   int numa_from_mem(const MemoryRegion& mr);

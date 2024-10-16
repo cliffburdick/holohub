@@ -497,6 +497,7 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
               flow.action_.id_ = flow_item["action"]["id"].as<int>();
               flow.match_.udp_src_ = flow_item["match"]["udp_src"].as<uint16_t>();
               flow.match_.udp_dst_ = flow_item["match"]["udp_dst"].as<uint16_t>();
+              flow.match_.udp_len_ = flow_item["match"]["udp_len"].as<uint16_t>();
 
               rx_cfg.flows_.emplace_back(flow);
             }

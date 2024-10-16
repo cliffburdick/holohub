@@ -219,6 +219,7 @@ struct FlowAction {
 struct FlowMatch {
   uint16_t udp_src_;
   uint16_t udp_dst_;
+  uint16_t udp_len_ = 0;
 };
 struct FlowConfig {
   std::string name_;
