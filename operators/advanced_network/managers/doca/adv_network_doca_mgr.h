@@ -173,6 +173,7 @@ class DocaMgr : public ANOMgr {
   uint16_t default_num_rx_desc = 8192;
   uint16_t default_num_tx_desc = 8192;
   int num_ports = 0;
+  bool gpu_ctrl_plane = false;
 
   void* get_seg_pkt_ptr(AdvNetBurstParams* burst, int seg, int idx) override;
   void* get_pkt_ptr(AdvNetBurstParams* burst, int idx) override;

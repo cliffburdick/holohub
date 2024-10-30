@@ -656,9 +656,11 @@ void DocaMgr::initialize() {
                                        q.common_.id_,
                                        rxq_pkts,
                                        q_max_packet_size,
-                                       mtype);
+                                       mtype, 
+                                       gpu_ctrl_plane);
     }
 
+    MemoryKind mkind;
     for (auto& q : intf.tx_.queues_) {
       int txq_pkts = -1;
       key = (intf.port_id_ << 16) | q.common_.id_;
@@ -668,16 +670,7 @@ void DocaMgr::initialize() {
           gpu_id = mr.second.affinity_;
 
           txq_pkts = next_power_of_two(mr.second.num_bufs_);
-          if (mr.second.kind_ == MemoryKind::DEVICE) {
-            mtype = DOCA_GPU_MEM_TYPE_GPU;
-          } else if (mr.second.kind_ == MemoryKind::HOST_PINNED) {
-            mtype = DOCA_GPU_MEM_TYPE_CPU_GPU;
-          } else {
-            HOLOSCAN_LOG_CRITICAL(
-                "FAILED: DOCA mgr doesn't support memory kind different from DEVICE or "
-                "HOST_PINNED");
-            return;
-          }
+          mkind = mr.second.kind_;
           break;
         }
       }
@@ -693,7 +686,7 @@ void DocaMgr::initialize() {
                                        q.common_.id_,
                                        txq_pkts,
                                        max_packet_size,
-                                       mtype,
+                                       mkind,
                                        &decrease_txq_completion_cb);
     }
 

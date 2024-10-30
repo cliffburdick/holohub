@@ -352,7 +352,7 @@ doca_error_t DocaRxQueue::destroy_semaphore() {
 
 DocaTxQueue::DocaTxQueue(struct doca_dev* ddev_, struct doca_gpu* gdev_, uint16_t qid_,
                          int max_pkt_num_, int max_pkt_size_, enum doca_gpu_mem_type mtype,
-                         doca_eth_txq_gpu_event_notify_send_packet_cb_t event_notify_send_packet_cb)
+                         doca_eth_txq_gpu_event_notify_send_packet_cb_t event_notify_send_packet_cb, bool gpu_ctrl)
     : ddev(ddev_), gdev(gdev_), qid(qid_), max_pkt_num(max_pkt_num_), max_pkt_size(max_pkt_size_) {
   doca_error_t result;
   uint32_t tx_buffer_size = max_pkt_size * max_pkt_num;
@@ -378,9 +378,11 @@ DocaTxQueue::DocaTxQueue(struct doca_dev* ddev_, struct doca_gpu* gdev_, uint16_
     HOLOSCAN_LOG_ERROR("Failed doca_eth_txq_as_doca_ctx: {}", doca_error_get_descr(result));
   }
 
-  result = doca_ctx_set_datapath_on_gpu(eth_txq_ctx, gdev);
-  if (result != DOCA_SUCCESS) {
-    HOLOSCAN_LOG_ERROR("Failed doca_ctx_set_datapath_on_gpu: {}", doca_error_get_descr(result));
+  if (gpu_ctrl) {
+    result = doca_ctx_set_datapath_on_gpu(eth_txq_ctx, gdev);
+    if (result != DOCA_SUCCESS) {
+      HOLOSCAN_LOG_ERROR("Failed doca_ctx_set_datapath_on_gpu: {}", doca_error_get_descr(result));
+    }
   }
 
   result = doca_pe_create(&pe);
@@ -407,9 +409,11 @@ DocaTxQueue::DocaTxQueue(struct doca_dev* ddev_, struct doca_gpu* gdev_, uint16_
     HOLOSCAN_LOG_ERROR("Failed doca_ctx_start: {}", doca_error_get_descr(result));
   }
 
-  result = doca_eth_txq_get_gpu_handle(eth_txq_cpu, &(eth_txq_gpu));
-  if (result != DOCA_SUCCESS) {
-    HOLOSCAN_LOG_ERROR("Failed doca_eth_txq_get_gpu_handle: {}", doca_error_get_descr(result));
+  if (gpu_ctrl) {
+    result = doca_eth_txq_get_gpu_handle(eth_txq_cpu, &(eth_txq_gpu));
+    if (result != DOCA_SUCCESS) {
+      HOLOSCAN_LOG_ERROR("Failed doca_eth_txq_get_gpu_handle: {}", doca_error_get_descr(result));
+    }
   }
 
   // Send buffer
@@ -423,11 +427,31 @@ DocaTxQueue::DocaTxQueue(struct doca_dev* ddev_, struct doca_gpu* gdev_, uint16_
     HOLOSCAN_LOG_ERROR("Failed to add dev to mmap: {}", doca_error_get_descr(result));
   }
 
-  result = doca_gpu_mem_alloc(
-      gdev, tx_buffer_size, GPU_PAGE_SIZE, mtype, &gpu_pkt_addr, &cpu_pkt_addr);
-  if (result != DOCA_SUCCESS || gpu_pkt_addr == nullptr) {
-    HOLOSCAN_LOG_ERROR("Failed to allocate gpu memory {}", doca_error_get_descr(result));
+  MemoryKind mkind;
+  if (gpu_ctrl) {
+    if (mr.second.kind_ == MemoryKind::DEVICE) {
+      mtype = DOCA_GPU_MEM_TYPE_GPU;
+    } else if (mr.second.kind_ == MemoryKind::HOST_PINNED) {
+      mtype = DOCA_GPU_MEM_TYPE_CPU_GPU;
+    } else {
+      HOLOSCAN_LOG_CRITICAL(
+          "FAILED: DOCA mgr doesn't support memory kind different from DEVICE or "
+          "HOST_PINNED");
+      return;
+    }
+
+    mkind = mr.second.kind_;
+
+    result = doca_gpu_mem_alloc(
+        gdev, tx_buffer_size, GPU_PAGE_SIZE, mtype, &gpu_pkt_addr, &cpu_pkt_addr);
+    if (result != DOCA_SUCCESS || gpu_pkt_addr == nullptr) {
+      HOLOSCAN_LOG_ERROR("Failed to allocate gpu memory {}", doca_error_get_descr(result));
+    }    
   }
+  else {
+    
+  }
+
 
   /* Map GPU memory buffer used to receive packets with DMABuf */
   // result = doca_gpu_dmabuf_fd(gdev, gpu_pkt_addr, tx_buffer_size, &(dmabuf_fd));

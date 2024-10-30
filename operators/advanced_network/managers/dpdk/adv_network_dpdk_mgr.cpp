@@ -114,7 +114,7 @@ AdvNetStatus DpdkMgr::get_mac(int port, char* mac) {
 void DpdkMgr::adjust_memory_regions() {
   for (auto& mr : cfg_.mrs_) {
     // mr.second.buf_size_ = ((target_el_size + 3) / 4) * 4;
-    mr.second.adj_size_ = mr.second.buf_size_ + RTE_PKTMBUF_HEADROOM;
+    mr.second.adj_size_ = mr.second.buf_size_ + RTE_PKTMBUF_HEADROOM*2;
     HOLOSCAN_LOG_INFO("Adjusting buffer size to {} for headroom", mr.second.adj_size_);
   }
 }
@@ -1351,6 +1351,8 @@ AdvNetStatus DpdkMgr::get_tx_pkt_burst(AdvNetBurstParams* burst) {
       rte_mempool_put(burst_pool->second, reinterpret_cast<void*>(burst->pkts[seg]));
       return AdvNetStatus::NO_FREE_PACKET_BUFFERS;
     }
+
+    printf("FF %p %p\n", burst->pkts[0][0], burst->pkts[0][1]);
   }
 
   return AdvNetStatus::SUCCESS;
@@ -1359,6 +1361,7 @@ AdvNetStatus DpdkMgr::get_tx_pkt_burst(AdvNetBurstParams* burst) {
 AdvNetStatus DpdkMgr::set_eth_hdr(AdvNetBurstParams* burst, int idx, char* dst_addr) {
   auto mbuf = reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx]);
   auto mbuf_data = rte_pktmbuf_mtod(mbuf, UDPPkt*);
+  printf("%p %p mbuf=%p burst=%p elt=%u\n", dst_addr, mbuf_data, burst->pkts[0][idx], burst, mbuf->pool->elt_size);
   memcpy(reinterpret_cast<void*>(&mbuf_data->eth.dst_addr),
          reinterpret_cast<void*>(dst_addr),
          sizeof(mbuf_data->eth.dst_addr));
@@ -1382,6 +1385,7 @@ AdvNetStatus DpdkMgr::set_ipv4_hdr(AdvNetBurstParams* burst, int idx, int ip_len
 
 AdvNetStatus DpdkMgr::set_udp_hdr(AdvNetBurstParams* burst, int idx, int udp_len, uint16_t src_port,
                                   uint16_t dst_port) {
+                                    printf("1 %p\n", reinterpret_cast<rte_mbuf*>(burst->pkts[0][1]));
   auto mbuf = reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx]);
   auto mbuf_data = rte_pktmbuf_mtod(mbuf, UDPPkt*);
 
@@ -1395,8 +1399,10 @@ AdvNetStatus DpdkMgr::set_udp_hdr(AdvNetBurstParams* burst, int idx, int udp_len
 AdvNetStatus DpdkMgr::set_udp_payload(AdvNetBurstParams* burst, int idx, void* data, int len) {
   auto mbuf = reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx]);
   auto mbuf_data = rte_pktmbuf_mtod(mbuf, UDPPkt*);
-
+printf("payload mbuf=%p mbuf_data=%p mbuf_payload=%p %p %d  next_mbuf=%p next_data=%p\n", mbuf, mbuf_data, mbuf_data->payload, data, len, reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx+1]), rte_pktmbuf_mtod(reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx+1]), uint8_t*));
   rte_memcpy(mbuf_data->payload, data, len);
+printf("payload mbuf=%p mbuf_data=%p mbuf_payload=%p %p %d  next_mbuf=%p next_data=%p\n", mbuf, mbuf_data, mbuf_data->payload, data, len, reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx+1]), rte_pktmbuf_mtod(reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx+1]), uint8_t*));
+printf("%u %zu\n", RTE_PKTMBUF_HEADROOM, sizeof(struct rte_mbuf));
   return AdvNetStatus::SUCCESS;
 }
 
@@ -1420,9 +1426,8 @@ AdvNetStatus DpdkMgr::set_pkt_lens(AdvNetBurstParams* burst, int idx,
   }
 
   reinterpret_cast<rte_mbuf**>(burst->pkts[0])[idx]->pkt_len = ttl_len;
-
-  reinterpret_cast<rte_mbuf**>(burst->pkts[0])[idx]->pkt_len = ttl_len;
-
+  auto mbuf_data = rte_pktmbuf_mtod(reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx]), UDPPkt*);
+printf("2 %p\n", mbuf_data);
   return AdvNetStatus::SUCCESS;
 }
 

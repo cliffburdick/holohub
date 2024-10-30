@@ -83,7 +83,7 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
     // port_id_ = adv_net_address_to_port(address_.get());
     port_id_ = 0;
 
-    size_t buf_size = batch_size_.get() * payload_size_.get();
+    size_t buf_size = batch_size_.get() * (payload_size_.get() + header_size_.get());
     if (!gpu_direct_.get()) {
       full_batch_data_h_ = malloc(buf_size);
       if (full_batch_data_h_ == nullptr) {
@@ -196,12 +196,14 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
     // For HDS mode or CPU mode populate the packet headers
     for (int num_pkt = 0; num_pkt < adv_net_get_num_pkts(msg); num_pkt++) {
       if (!gpu_direct_.get() || hds_.get() > 0) {
+        printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);
         if ((ret = adv_net_set_eth_hdr(msg, num_pkt, eth_dst_)) != AdvNetStatus::SUCCESS) {
           HOLOSCAN_LOG_ERROR("Failed to set Ethernet header for packet {}", num_pkt);
           adv_net_free_all_pkts_and_burst(msg);
           return;
         }
-
+printf("here\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);
         // Remove Eth + IP size
         const auto ip_len = payload_size_.get() + header_size_.get() - (14 + 20);
         if ((ret = adv_net_set_ipv4_hdr(msg, num_pkt, ip_len, 17, ip_src_, ip_dst_)) !=
@@ -210,7 +212,8 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
           adv_net_free_all_pkts_and_burst(msg);
           return;
         }
-
+printf("here2\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);
         if ((ret = adv_net_set_udp_hdr(msg,
                                        num_pkt,
                                        // Remove Eth + IP + UDP headers
@@ -221,7 +224,8 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
           adv_net_free_all_pkts_and_burst(msg);
           return;
         }
-
+printf("here3\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);
         // Only set payload on CPU buffer if we're not in HDS mode
         if (hds_.get() == 0) {
           if ((ret = adv_net_set_udp_payload(
@@ -236,6 +240,8 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
         }
       }
 
+printf("here4\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);
       // Figure out the CPU and GPU length portions for ANO
       if (gpu_direct_.get() && hds_.get() > 0) {
         gpu_bufs[cur_idx][num_pkt] =
@@ -260,8 +266,12 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
           return;
         }
       }
-    }
 
+printf("here7\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][1], msg);      
+    }
+printf("here5\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][0], msg);
     // In GPU-only mode copy the header
     if (gpu_direct_.get() && hds_.get() == 0) {
       copy_headers(gpu_bufs[cur_idx],
@@ -270,7 +280,8 @@ class AdvNetworkingBenchDefaultTxOp : public Operator {
                    adv_net_get_num_pkts(msg),
                    streams_[cur_idx]);
     }
-
+printf("here6\n");
+printf("%ld ddd %p burst=%p\n", adv_net_get_num_pkts(msg), msg->pkts[0][0], msg);
     // Populate packets with 16-bit numbers of {0,0}, {1,1}, ...
     if (gpu_direct_.get()) {
       const auto offset = (hds_.get() > 0) ? 0 : header_size_.get();
