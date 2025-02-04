@@ -174,6 +174,7 @@ int adv_net_address_to_port(const std::string& addr) {
 AdvNetStatus adv_net_get_tx_pkt_burst(AdvNetBurstParams* burst) {
   ASSERT_ANO_MGR_INITIALIZED();
   if (!g_ano_mgr->tx_burst_available(burst)) return AdvNetStatus::NO_FREE_BURST_BUFFERS;
+  burst->hdr.hdr.opcode = AdvNetOpCode::SEND;
   return g_ano_mgr->get_tx_pkt_burst(burst);
 }
 

@@ -546,6 +546,8 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
           } catch (const std::exception& e) { ifcfg.flow_isolation_ = false; }
 
           ifcfg.port_id_ = port++;
+          ifcfg.rdma_.mode_    = holoscan::ops::GetRDMAModeFromString(intf["rdma_mode"].as<std::string>());
+          ifcfg.rdma_.xmode_   = holoscan::ops::GetRDMATransportModeFromString(intf["rdma_transport_mode"].as<std::string>());               
 
           const auto& rx = intf["rx"];
           for (const auto& rx_item : rx) {

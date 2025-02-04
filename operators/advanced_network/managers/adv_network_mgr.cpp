@@ -114,7 +114,7 @@ template AnoMgrType AnoMgrFactory::get_manager_type<Config>(const Config&);
 
 AdvNetStatus ANOMgr::allocate_memory_regions() {
   HOLOSCAN_LOG_INFO("Registering memory regions");
-#if ANO_MGR_DPDK || ANO_MGR_DOCA
+#if ANO_MGR_DPDK || ANO_MGR_DOCA || ANO_MGR_RDMA
   for (auto& mr : cfg_.mrs_) {
     void* ptr;
     AllocRegion ar;
@@ -190,6 +190,20 @@ AdvNetStatus ANOMgr::allocate_memory_regions() {
 #endif
   HOLOSCAN_LOG_INFO("Finished allocating memory regions");
   return AdvNetStatus::SUCCESS;
+}
+
+std::string ANOMgr::get_intf_from_mr(const std::string &mr_name) {
+  for (const auto& intf : cfg_.ifs_) {
+    for (const auto& rxq : intf.rx_.queues_) {
+      for (const auto& mr : rxq.common_.mrs_) { 
+        if (mr.name_ == mr_name) {
+          return intf.address_;
+        }
+      }
+    }
+  }
+
+  return "";
 }
 
 bool ANOMgr::validate_config() const {
