@@ -548,7 +548,7 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
           ifcfg.port_id_ = port++;
           ifcfg.rdma_.mode_    = holoscan::ops::GetRDMAModeFromString(intf["rdma_mode"].as<std::string>());
           ifcfg.rdma_.xmode_   = holoscan::ops::GetRDMATransportModeFromString(intf["rdma_transport_mode"].as<std::string>());               
-
+          ifcfg.rdma_.port_    = intf["rdma_port"].as<uint16_t>();
           const auto& rx = intf["rx"];
           for (const auto& rx_item : rx) {
             holoscan::ops::AdvNetRxConfig rx_cfg;
@@ -598,7 +598,7 @@ struct YAML::convert<holoscan::ops::AdvNetConfigYaml> {
 
             ifcfg.tx_ = tx_cfg;
           }
-
+printf("pushing back\n");
           input_spec.ifs_.push_back(ifcfg);
         }
       } catch (const std::exception& e) {

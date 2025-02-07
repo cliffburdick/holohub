@@ -25,6 +25,7 @@
 #include <set>
 #include <sys/time.h>
 #include "adv_network_dpdk_mgr.h"
+#include "adv_network_dpdk_log.h"
 #include "holoscan/holoscan.hpp"
 
 using namespace std::chrono;
@@ -71,30 +72,7 @@ struct ExtraRxPacketInfo {
   uint16_t flow_id;
 };
 
-/**
- * A map of log level to a tuple of the description and command strings.
- */
-const std::unordered_map<DpdkLogLevel::Level, std::tuple<std::string, std::string>>
-    DpdkLogLevel::level_to_cmd_map = {{OFF, {"Disabled", "9"}},
-                                      {EMERGENCY, {"Emergency", "emergency"}},
-                                      {ALERT, {"Alert", "alert"}},
-                                      {CRITICAL, {"Critical", "critical"}},
-                                      {ERROR, {"Error", "error"}},
-                                      {WARN, {"Warning", "warning"}},
-                                      {NOTICE, {"Notice", "notice"}},
-                                      {INFO, {"Info", "info"}},
-                                      {DEBUG, {"Debug", "debug"}}};
 
-const std::unordered_map<AnoLogLevel::Level, DpdkLogLevel::Level>
-    DpdkLogLevel::ano_to_dpdk_log_level_map = {
-        {AnoLogLevel::TRACE, DEBUG},
-        {AnoLogLevel::DEBUG, DEBUG},
-        {AnoLogLevel::INFO, INFO},
-        {AnoLogLevel::WARN, WARN},
-        {AnoLogLevel::ERROR, ERROR},
-        {AnoLogLevel::CRITICAL, CRITICAL},
-        {AnoLogLevel::OFF, OFF},
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 ///

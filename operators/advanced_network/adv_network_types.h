@@ -199,7 +199,7 @@ enum class AnoMgrType {
 static constexpr const char* ANO_MGR_STR__DPDK = "dpdk";
 static constexpr const char* ANO_MGR_STR__DOCA = "doca";
 static constexpr const char* ANO_MGR_STR__RIVERMAX = "rivermax";
-static constexpr const char* ANO_MGR_STR__RDMA = "RDMA";
+static constexpr const char* ANO_MGR_STR__RDMA = "rdma";
 static constexpr const char* ANO_MGR_STR__DEFAULT = "default";
 
 /**
@@ -282,6 +282,7 @@ inline RDMATransportMode GetRDMATransportModeFromString(const std::string &mode_
 struct RDMAConfig {
   RDMAMode mode_ = RDMAMode::INVALID;
   RDMATransportMode xmode_ = RDMATransportMode::INVALID;
+  uint16_t port_ = 0;
 };
 
 class AnoLogLevel {
@@ -490,6 +491,24 @@ auto adv_net_get_rx_tx_cfg_en(const Config& config) {
   }
 
   return std::make_tuple(rx, tx);
+}
+
+template <typename Config>
+auto adv_net_get_rdma_cfg_en(const Config& config) {
+  bool server = false;
+  bool client = false;
+
+  auto& yaml_nodes = config.yaml_nodes();
+  for (const auto& yaml_node : yaml_nodes) {
+    auto node = yaml_node["advanced_network"]["cfg"]["interfaces"];
+    for (const auto& intf : node) {
+      std::string mode = intf["rdma_mode"].template as<std::string>();
+      if (mode == "server") { server = true; }
+      else if (mode == "client") { client = true; }
+    }
+  }
+
+  return std::make_tuple(server, client);
 }
 
 };  // namespace holoscan::ops

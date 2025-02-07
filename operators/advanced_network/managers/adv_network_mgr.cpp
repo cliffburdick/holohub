@@ -26,6 +26,9 @@
 #if ANO_MGR_RIVERMAX
 #include "adv_network_rmax_mgr.h"
 #endif
+#if ANO_MGR_RDMA
+#include "adv_network_rdma_mgr.h"
+#endif
 
 #if ANO_MGR_DPDK || ANO_MGR_DOCA
 #include <rte_common.h>
@@ -50,6 +53,8 @@ AnoMgrType AnoMgrFactory::get_default_manager_type() {
   mgr_type = AnoMgrType::DOCA;
 #elif ANO_MGR_RIVERMAX
   mgr_type = AnoMgrType::RIVERMAX;
+#elif ANO_MGR_RDMA
+  mgr_type = AnoMgrType::RDMA;  
 #else
 #error "No advanced network operator manager defined"
 #endif
@@ -72,6 +77,11 @@ std::unique_ptr<ANOMgr> AnoMgrFactory::create_instance(AnoMgrType type) {
 #if ANO_MGR_RIVERMAX
     case AnoMgrType::RIVERMAX:
       _manager = std::make_unique<RmaxMgr>();
+      break;
+#endif
+#if ANO_MGR_RDMA
+    case AnoMgrType::RDMA:
+      _manager = std::make_unique<RdmaMgr>();
       break;
 #endif
     case AnoMgrType::DEFAULT:
@@ -121,6 +131,7 @@ AdvNetStatus ANOMgr::allocate_memory_regions() {
     mr.second.ttl_size_ = RTE_ALIGN_CEIL(mr.second.adj_size_ * mr.second.num_bufs_, GPU_PAGE_SIZE);
 
     if (mr.second.owned_) {
+      printf("here\n");
       switch (mr.second.kind_) {
         case MemoryKind::HOST:
           ptr = malloc(mr.second.ttl_size_);
@@ -138,7 +149,7 @@ AdvNetStatus ANOMgr::allocate_memory_regions() {
           unsigned int flag = 1;
           const auto align = RTE_ALIGN_CEIL(mr.second.ttl_size_, GPU_PAGE_SIZE);
           CUdeviceptr cuptr;
-
+          printf("here2 %zu %zu\n", mr.second.adj_size_ , mr.second.num_bufs_);
           cudaSetDevice(mr.second.affinity_);
           cudaFree(0);  // Create primary context if it doesn't exist
           const auto alloc_res = cuMemAlloc(&cuptr, align);
@@ -192,18 +203,18 @@ AdvNetStatus ANOMgr::allocate_memory_regions() {
   return AdvNetStatus::SUCCESS;
 }
 
-std::string ANOMgr::get_intf_from_mr(const std::string &mr_name) {
+int ANOMgr::get_intf_from_mr(const std::string &mr_name) {
   for (const auto& intf : cfg_.ifs_) {
     for (const auto& rxq : intf.rx_.queues_) {
       for (const auto& mr : rxq.common_.mrs_) { 
-        if (mr.name_ == mr_name) {
-          return intf.address_;
+        if (mr == mr_name) {
+          return intf.port_id_;
         }
       }
     }
   }
 
-  return "";
+  return -1;
 }
 
 bool ANOMgr::validate_config() const {

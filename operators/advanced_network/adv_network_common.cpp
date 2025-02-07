@@ -18,11 +18,6 @@
 #include "adv_network_mgr.h"
 #include "adv_network_common.h"
 #include "holoscan/holoscan.hpp"
-#if ANO_MGR_DPDK || ANO_MGR_DOCA
-#include <rte_mbuf.h>
-#include <rte_memcpy.h>
-#include <rte_ethdev.h>
-#endif
 #if ANO_MGR_RIVERMAX
 #include "adv_network_rmax_mgr.h"
 #endif
