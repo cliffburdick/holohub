@@ -293,6 +293,11 @@ std::unordered_set<std::string> adv_net_get_port_names(const Config& conf, const
   return output_ports;
 }
 
+// RDMA Functions
+AdvNetStatus adv_net_rdma_connect_to_server(const std::string& server_addr, uint16_t server_port) {
+  return g_ano_mgr->rdma_connect_to_server(server_addr, server_port);
+}
+
 };  // namespace holoscan::ops
 
 /**
