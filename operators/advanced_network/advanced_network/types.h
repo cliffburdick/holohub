@@ -71,6 +71,12 @@ enum class RDMAOpCode {
   INVALID
 };
 
+enum class RDMACompletionType {
+  RX,
+  TX,
+  INVALID
+};
+
 struct AdvNetRdmaBurstHdr {
   uint8_t version;
   RDMAOpCode  opcode;
