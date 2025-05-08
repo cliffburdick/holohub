@@ -100,4 +100,4 @@ class DpdkLogLevelCommandBuilder : public ManagerLogLevelCommandBuilder {
   DpdkLogLevel::Level level_;  ///< The DPDK log level.
 };
 
-}  // namespace holoscan::ops
+}  // namespace holoscan::advanced_network
