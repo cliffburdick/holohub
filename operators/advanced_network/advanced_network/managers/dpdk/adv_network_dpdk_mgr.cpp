@@ -361,12 +361,12 @@ void DpdkMgr::initialize() {
     return;
   }
 
-  if (register_mrs() != Status::SUCCESS) {
+  if (register_memory_regions() != Status::SUCCESS) {
     HOLOSCAN_LOG_CRITICAL("Failed to register MRs");
     return;
   }
 
-  if (map_mrs() != Status::SUCCESS) {
+  if (map_memory_regions() != Status::SUCCESS) {
     HOLOSCAN_LOG_CRITICAL("Failed to map MRs");
     return;
   }
