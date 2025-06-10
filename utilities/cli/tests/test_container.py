@@ -72,10 +72,12 @@ class TestHoloHubContainer(unittest.TestCase):
             f"Image name {self.container.image_name} not found in command: {cmd}",
         )
 
+    @patch("utilities.cli.container.check_nvidia_ctk")
     @patch("subprocess.run")
     @patch("subprocess.check_output")
-    def test_run(self, mock_check_output, mock_run):
+    def test_run(self, mock_check_output, mock_run, mock_check_nvidia_ctk):
         """Test container run command"""
+        mock_check_nvidia_ctk.return_value = None
         mock_check_output.return_value = ""
         self.container.run()
         mock_run.assert_called_once()
@@ -92,7 +94,7 @@ class TestHoloHubContainer(unittest.TestCase):
         self.container.run()
         cmd = mock_completed_process.call_args[0][0]
         self.assertTrue(self.container.image_name in cmd)
-        self.assertIn('"c 81:* rmw"', cmd)
+        self.assertIn("c 81:* rmw", cmd)
         self.container.dryrun = False
 
 

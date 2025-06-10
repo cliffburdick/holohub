@@ -29,15 +29,19 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # --------------------------------------------------------------------------
 #
-# Holohub run setup 
+# Holohub CLI setup
 #
 
+# Install python3 if not present (needed for holohub CLI)
+RUN if ! command -v python3 >/dev/null 2>&1; then \
+        apt-get update && apt-get install -y python3 python3-pip; \
+    fi
 RUN mkdir -p /tmp/scripts
-COPY run /tmp/scripts/
+COPY holohub /tmp/scripts/
 RUN mkdir -p /tmp/scripts/utilities
-COPY utilities/holohub_autocomplete /tmp/scripts/utilities/
-RUN chmod +x /tmp/scripts/run
-RUN /tmp/scripts/run setup
+COPY utilities /tmp/scripts/utilities/
+RUN chmod +x /tmp/scripts/holohub
+RUN /tmp/scripts/holohub setup && rm -rf /var/lib/apt/lists/*
 
 # Enable autocomplete
 RUN echo ". /etc/bash_completion.d/holohub_autocomplete" >> /etc/bash.bashrc
@@ -73,6 +77,7 @@ RUN if ! grep -q "VERSION_ID=\"22.04\"" /etc/os-release; then \
     fi
 COPY benchmarks/holoscan_flow_benchmarking/requirements.txt /tmp/benchmarking_requirements.txt
 RUN pip install -r /tmp/benchmarking_requirements.txt
+ENV PYTHONPATH=/workspace/holohub/benchmarks/holoscan_flow_benchmarking
 
 # For RTI Connext DDS
 RUN apt update \

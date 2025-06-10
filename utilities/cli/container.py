@@ -30,7 +30,7 @@ from .util import (
     run_command,
 )
 
-base_sdk_version = "3.2.0"
+base_sdk_version = "3.3.0"
 
 
 class HoloHubContainer:
@@ -143,6 +143,11 @@ class HoloHubContainer:
                 "<holohub_app_source>", str(self.project_metadata["source_folder"])
             )
             dockerfile = dockerfile.replace("<holohub_root>", str(HoloHubContainer.HOLOHUB_ROOT))
+
+            # If the Dockerfile path is not absolute, make it absolute
+            if not str(dockerfile).startswith(str(HoloHubContainer.HOLOHUB_ROOT)):
+                dockerfile = str(HoloHubContainer.HOLOHUB_ROOT / dockerfile)
+
             return Path(dockerfile)
 
         source_folder = self.project_metadata.get("source_folder", "")
@@ -325,12 +330,9 @@ class HoloHubContainer:
         cmd.extend(self.get_nsys_options(nsys_profile, nsys_location))
 
         # Add local SDK options if provided
-        pythonpath = "/workspace/holohub/benchmarks/holoscan_flow_benchmarking"
         if local_sdk_root:
             cmd.extend(self.get_local_sdk_options(local_sdk_root))
-            cmd.extend(["-e", f"PYTHONPATH=/workspace/holoscan-sdk/build/python/lib:{pythonpath}"])
-        else:
-            cmd.extend(["-e", f"PYTHONPATH=/opt/nvidia/holoscan/python/lib:{pythonpath}"])
+            cmd.extend(["-e", "PYTHONPATH=/workspace/holoscan-sdk/build/python/lib"])
 
         # Add docker options if provided
         if docker_opts:
