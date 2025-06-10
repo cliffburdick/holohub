@@ -83,7 +83,7 @@ advanced_network:
         mode: server
         transport_mode: RC
         port: 4096
-      address: 192.168.10.2       # The IP address of the interface doing Rx
+      address: 192.168.10.2       # The IP address of the interface to bind to
       rx:
         queues:
         - name: "Server_RX_Queue"
