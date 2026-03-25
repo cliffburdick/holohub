@@ -1428,12 +1428,10 @@ struct rte_flow* DpdkMgr::add_modify_flow_set(int port, int queue, const char* b
   struct rte_flow_attr attr;
   struct rte_flow_item pattern[MAX_PATTERN_NUM];
   struct rte_flow_action action[MAX_ACTION_NUM];
-  struct rte_flow* flow = NULL;
-  struct rte_flow_action_modify_field mf;
   struct rte_flow_error error;
   struct rte_flow_item_eth eth;
-  struct rte_flow_field_data src;
-  struct rte_flow_field_data dst;
+  struct rte_flow_item_tx_queue txq_spec;
+  struct rte_flow_item_tx_queue txq_mask;
 
   int res;
 
@@ -1441,58 +1439,52 @@ struct rte_flow* DpdkMgr::add_modify_flow_set(int port, int queue, const char* b
   memset(action, 0, sizeof(action));
   memset(&eth, 0, sizeof(struct rte_flow_item_eth));
 
-  /* Set the rule attribute, only ingress packets will be checked. 8< */
   memset(&attr, 0, sizeof(struct rte_flow_attr));
   attr.ingress = (direction == Direction::RX) ? 1 : 0;
   attr.egress = (direction == Direction::TX) ? 1 : 0;
-
-  // mf.operation = RTE_FLOW_MODIFY_SET;
-
-  // mf.src.field      = RTE_FLOW_FIELD_VALUE;
-  // mf.src.level      = 0;
-  // mf.src.tag_index  = 0;
-  // mf.src.type       = 0;
-  // mf.src.class_id   = 0;
-  // mf.src.offset     = 0;
-  // memcpy(mf.src.value, buf, len / 8);
-  // printf("%02x %02x %02x %02x %02x %02x %d\n", mf.src.value[0], mf.src.value[1], mf.src.value[2],
-  // mf.src.value[3], mf.src.value[4], mf.src.value[5],len / 8);
-
-  // mf.dst.field      = RTE_FLOW_FIELD_MAC_SRC;
-  // mf.dst.level      = 0;
-  // mf.dst.tag_index  = 0;
-  // mf.src.type       = 0;
-  // mf.src.class_id   = 0;
-  // mf.src.offset     = 0;
-
-  // mf.width = len;
-
-  // action[0].type  = RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
-  // action[0].conf  = &mf;
-  // action[1].type  = RTE_FLOW_ACTION_TYPE_END;
-  // pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
-  // pattern[0].spec = &eth;
-  // pattern[0].mask = &eth;
-  // attr.priority = 0;
-
-  // pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+  attr.priority = 1;
 
   struct rte_flow_action_set_mac sm;
   memcpy(&sm, buf, len / 8);
   action[0].type = RTE_FLOW_ACTION_TYPE_SET_MAC_SRC;
   action[0].conf = &sm;
   action[1].type = RTE_FLOW_ACTION_TYPE_END;
-  pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
-  pattern[0].spec = &eth;
-  pattern[0].mask = &eth;
-  attr.priority = 1;
 
-  pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+  memset(&txq_spec, 0, sizeof(txq_spec));
+  txq_spec.tx_queue = static_cast<uint16_t>(queue);
+  memset(&txq_mask, 0, sizeof(txq_mask));
+  txq_mask.tx_queue = 0xffff;
+
+  int p = 0;
+  if (direction == Direction::TX) {
+    pattern[p].type = RTE_FLOW_ITEM_TYPE_TX_QUEUE;
+    pattern[p].spec = &txq_spec;
+    pattern[p].mask = &txq_mask;
+    p++;
+  }
+  pattern[p].type = RTE_FLOW_ITEM_TYPE_ETH;
+  pattern[p].spec = &eth;
+  pattern[p].mask = &eth;
+  p++;
+  pattern[p].type = RTE_FLOW_ITEM_TYPE_END;
 
   res = rte_flow_validate(port, &attr, pattern, action, &error);
-  if (!res) {
-    flow = rte_flow_create(port, &attr, pattern, action, &error);
-    return flow;
+  if (res != 0 && direction == Direction::TX) {
+    HOLOSCAN_LOG_INFO(
+        "tx_eth_src: rte_flow with RTE_FLOW_ITEM_TYPE_TX_QUEUE not accepted ({}), retrying without "
+        "queue match",
+        error.message ? error.message : "unknown");
+    p = 0;
+    pattern[p].type = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[p].spec = &eth;
+    pattern[p].mask = &eth;
+    p++;
+    pattern[p].type = RTE_FLOW_ITEM_TYPE_END;
+    res = rte_flow_validate(port, &attr, pattern, action, &error);
+  }
+
+  if (res == 0) {
+    return rte_flow_create(port, &attr, pattern, action, &error);
   }
 
   return nullptr;
@@ -2364,11 +2356,23 @@ Status DpdkMgr::get_tx_packet_burst(BurstParams* burst) {
 }
 
 Status DpdkMgr::set_eth_header(BurstParams* burst, int idx, char* dst_addr) {
+  const uint16_t port = burst->hdr.hdr.port_id;
+  if (port >= mac_addrs.size()) {
+    HOLOSCAN_LOG_CRITICAL("Port {} out of range in set_eth_header()", port);
+    return Status::INVALID_PARAMETER;
+  }
+
   auto mbuf = reinterpret_cast<rte_mbuf*>(burst->pkts[0][idx]);
   auto mbuf_data = rte_pktmbuf_mtod(mbuf, UDPPkt*);
   memcpy(reinterpret_cast<void*>(&mbuf_data->eth.dst_addr),
          reinterpret_cast<void*>(dst_addr),
          sizeof(mbuf_data->eth.dst_addr));
+
+  // rte_flow SET_MAC_SRC may not affect host TX on some PMDs (e.g. mlx5); always set SMAC in mbuf.
+  // See https://github.com/nvidia-holoscan/holohub/issues/1485
+  memcpy(reinterpret_cast<void*>(&mbuf_data->eth.src_addr),
+         reinterpret_cast<const void*>(&mac_addrs[port]),
+         sizeof(mbuf_data->eth.src_addr));
 
   mbuf_data->eth.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
   return Status::SUCCESS;
